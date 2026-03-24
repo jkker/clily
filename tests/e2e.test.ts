@@ -2,7 +2,7 @@
 import { type as arkType } from 'arktype'
 import * as v from 'valibot'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vite-plus/test'
-import { object, string, number } from 'zod'
+import { boolean as zBoolean, enum as zEnum, number, object, string } from 'zod'
 
 import { setNestedValue } from '../src/args.ts'
 import {
@@ -86,6 +86,32 @@ describe('toJsonSchema — Valibot', () => {
     })
   })
 
+  test('handles number, literal, and nullish types', () => {
+    const schema = v.object({
+      count: v.number(),
+      mode: v.literal('fast'),
+      name: v.nullish(v.string(), 'default'),
+    })
+
+    const js = toJsonSchema(schema)
+
+    expect(js.properties.count.type).toBe('number')
+    expect(js.properties.mode.type).toBe('string')
+    expect(js.properties.name.type).toBe('string')
+    expect(js.properties.name.default).toBe('default')
+    expect(js.required).toEqual(['count', 'mode'])
+  })
+
+  test('handles function defaults', () => {
+    const schema = v.object({
+      list: v.optional(v.string(), () => 'computed'),
+    })
+
+    const js = toJsonSchema(schema)
+
+    expect(js.properties.list.default).toBe('computed')
+  })
+
   test('returns empty schema for unknown schema types', () => {
     const schema = {
       '~standard': {
@@ -131,6 +157,19 @@ describe('toJsonSchema — Zod v4', () => {
     expect(js.required).toEqual(['name'])
     expect(js.properties.nickname.type).toBe('string')
   })
+
+  test('handles boolean and enum types', () => {
+    const schema = object({
+      active: zBoolean(),
+      level: zEnum(['info', 'debug', 'warn']),
+    })
+
+    const js = toJsonSchema(schema)
+
+    expect(js.properties.active.type).toBe('boolean')
+    expect(js.properties.level.type).toBe('string')
+    expect(js.properties.level.enum).toEqual(['info', 'debug', 'warn'])
+  })
 })
 
 // ─── Schema Introspection: ArkType ──────────────────────
@@ -152,6 +191,17 @@ describe('toJsonSchema — ArkType', () => {
     expect(js.properties.name.type).toBe('string')
     expect(js.properties.active.type).toBe('boolean')
     expect(js.properties.count.type).toBe('number')
+  })
+
+  test('handles schema with only optional fields', () => {
+    const schema = arkType({
+      'name?': 'string',
+    })
+
+    const js = toJsonSchema(schema)
+
+    expect(js.required).toEqual([])
+    expect(js.properties.name.type).toBe('string')
   })
 })
 
@@ -1009,6 +1059,293 @@ describe('E2E: realistic deploy CLI with multiple schema libraries', () => {
     })
 
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ replicas: 1 }))
+  })
+})
+
+// ─── Nested JSON Schema Args ────────────────────────────
+
+describe('Nested JSON Schema args', () => {
+  test('jsonSchemaToCittyArgs handles nested object properties', () => {
+    const { jsonSchemaToCittyArgs } = require('../src/args.ts') as typeof import('../src/args.ts')
+    const schema: JsonSchema = {
+      type: 'object',
+      properties: {
+        config: {
+          type: 'object',
+          properties: {
+            server: { type: 'string' },
+            port: { type: 'number' },
+          },
+          required: ['server'],
+        },
+      },
+      required: [],
+    }
+
+    const args = jsonSchemaToCittyArgs(schema)
+    expect(args['config.server']).toBeDefined()
+    expect(args['config.port']).toBeDefined()
+    expect(args['config.server'].type).toBe('string')
+  })
+})
+
+// ─── Env Var Helpers ────────────────────────────────────
+
+describe('Env var helpers', () => {
+  test('camelToEnvKey converts correctly', () => {
+    const { camelToEnvKey } = require('../src/env.ts') as typeof import('../src/env.ts')
+    expect(camelToEnvKey('apiKey')).toBe('API_KEY')
+    expect(camelToEnvKey('dryRun')).toBe('DRY_RUN')
+  })
+})
+
+// ─── Prompt cancel handling ─────────────────────────────
+
+describe('Prompt cancel handling', () => {
+  test('exits when text prompt is cancelled', async () => {
+    const p = await import('@clack/prompts')
+    const { promptForMissing } = await import('../src/prompt.ts')
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    vi.mocked(p.isCancel).mockReturnValueOnce(true)
+
+    const schema: JsonSchema = {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
+    }
+
+    await expect(promptForMissing(['name'], schema)).rejects.toThrow('process.exit called')
+
+    expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
+    expect(mockExit).toHaveBeenCalledWith(0)
+    mockExit.mockRestore()
+    vi.mocked(p.isCancel).mockReturnValue(false)
+  })
+
+  test('exits when confirm prompt is cancelled', async () => {
+    const p = await import('@clack/prompts')
+    const { promptForMissing } = await import('../src/prompt.ts')
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    vi.mocked(p.isCancel).mockReturnValueOnce(true)
+
+    const schema: JsonSchema = {
+      type: 'object',
+      properties: { flag: { type: 'boolean' } },
+      required: ['flag'],
+    }
+
+    await expect(promptForMissing(['flag'], schema)).rejects.toThrow('process.exit called')
+
+    expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
+    expect(mockExit).toHaveBeenCalledWith(0)
+    mockExit.mockRestore()
+    vi.mocked(p.isCancel).mockReturnValue(false)
+  })
+})
+
+// ─── Re-validation after prompt ─────────────────────────
+
+describe('Re-validation after prompt', () => {
+  let subRunHandlers: Record<string, (ctx: Record<string, unknown>) => Promise<void>>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    subRunHandlers = {}
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => {
+      const meta = def.meta as Record<string, string> | undefined
+      if (meta?.name && meta.name !== 'mycli') {
+        subRunHandlers[meta.name] = def.run as (ctx: Record<string, unknown>) => Promise<void>
+      }
+      return def
+    })
+    mockRunMain.mockResolvedValue(undefined)
+    mockLoadConfig.mockResolvedValue({ config: {}, layers: [] })
+  })
+
+  test('exits when re-validation fails after prompt', async () => {
+    mockHasTTY = true
+    mockIsCI = false
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          args: v.object({
+            count: v.pipe(v.number(), v.minValue(1)),
+          }),
+          handler: async () => {},
+        },
+      },
+    })
+
+    // Prompt returns 'prompted-value' which isn't a valid number > 1
+    await expect(
+      subRunHandlers['deploy']({
+        rawArgs: [],
+        args: {},
+        cmd: {},
+      }),
+    ).rejects.toThrow('exit')
+
+    expect(mockExit).toHaveBeenCalledWith(1)
+    mockExit.mockRestore()
+  })
+})
+
+// ─── TTY validation with type errors (not missing keys) ─
+
+describe('TTY validation with type errors', () => {
+  let subRunHandlers: Record<string, (ctx: Record<string, unknown>) => Promise<void>>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    subRunHandlers = {}
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => {
+      const meta = def.meta as Record<string, string> | undefined
+      if (meta?.name && meta.name !== 'mycli') {
+        subRunHandlers[meta.name] = def.run as (ctx: Record<string, unknown>) => Promise<void>
+      }
+      return def
+    })
+    mockRunMain.mockResolvedValue(undefined)
+    mockLoadConfig.mockResolvedValue({ config: {}, layers: [] })
+  })
+
+  test('logs type errors and exits in TTY when no missing keys', async () => {
+    mockHasTTY = true
+    mockIsCI = false
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+
+    // Schema requires a number, but CLI provides a non-coercible string
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          args: v.object({
+            count: v.number(),
+          }),
+          handler: async () => {},
+        },
+      },
+    })
+
+    // Provide count as non-numeric string (coercion can't fix it)
+    await expect(
+      subRunHandlers['deploy']({
+        rawArgs: ['--count=abc'],
+        args: { count: 'abc' },
+        cmd: {},
+      }),
+    ).rejects.toThrow('exit')
+
+    expect(mockExit).toHaveBeenCalledWith(1)
+    mockExit.mockRestore()
+  })
+})
+
+// ─── Help for child command (generateChildHelp) ─────────
+
+describe('generateChildHelp', () => {
+  test('generates child help with parent flags and child args', () => {
+    const { generateChildHelp } = require('../src/help.ts') as typeof import('../src/help.ts')
+    const parentFlagsSchema: JsonSchema = {
+      type: 'object',
+      properties: { verbose: { type: 'boolean', default: false } },
+      required: [],
+    }
+    const childConfig = {
+      description: 'Deploy the project',
+      args: v.object({ apiKey: v.string() }),
+    }
+
+    const help = generateChildHelp(childConfig, parentFlagsSchema, ['mycli', 'deploy'])
+
+    expect(help).toContain('deploy')
+    expect(help).toContain('Deploy the project')
+    expect(help).toContain('--verbose')
+    expect(help).toContain('--api-key')
+    expect(help).toContain('GLOBAL FLAGS:')
+    expect(help).toContain('OPTIONS:')
+  })
+
+  test('generates child help without parent flags', () => {
+    const { generateChildHelp } = require('../src/help.ts') as typeof import('../src/help.ts')
+    const childConfig = {
+      description: 'Init project',
+    }
+
+    const help = generateChildHelp(childConfig, null, ['mycli', 'init'])
+
+    expect(help).toContain('init')
+    expect(help).toContain('Init project')
+    expect(help).not.toContain('GLOBAL FLAGS:')
+  })
+})
+
+// ─── Valibot description extraction ─────────────────────
+
+describe('Schema description extraction', () => {
+  test('extracts description from valibot string message', () => {
+    const schema = v.object({
+      apiKey: v.string('API Key is required'),
+    })
+
+    const js = toJsonSchema(schema)
+
+    expect(js.properties.apiKey.description).toBe('API Key is required')
+  })
+})
+
+// ─── Config file loading error resilience ────────────────
+
+describe('Config file loading error', () => {
+  let subRunHandlers: Record<string, (ctx: Record<string, unknown>) => Promise<void>>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    subRunHandlers = {}
+    mockHasTTY = false
+    mockIsCI = true
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => {
+      const meta = def.meta as Record<string, string> | undefined
+      if (meta?.name && meta.name !== 'mycli') {
+        subRunHandlers[meta.name] = def.run as (ctx: Record<string, unknown>) => Promise<void>
+      }
+      return def
+    })
+    mockRunMain.mockResolvedValue(undefined)
+  })
+
+  test('continues when config file loading fails', async () => {
+    mockLoadConfig.mockRejectedValueOnce(new Error('file not found'))
+    const handler = vi.fn()
+
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          args: v.object({ name: v.optional(v.string(), 'default') }),
+          handler,
+        },
+      },
+    })
+
+    await subRunHandlers['deploy']({
+      rawArgs: [],
+      args: {},
+      cmd: {},
+    })
+
+    expect(handler).toHaveBeenCalled()
   })
 })
 

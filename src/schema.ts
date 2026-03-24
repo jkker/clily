@@ -65,8 +65,8 @@ function zodEntryToProperty(raw: Record<string, unknown>): {
         ? (def.defaultValue as () => unknown)()
         : def.defaultValue
   }
-  if (innerType === 'enum' && Array.isArray(innerDef?.values)) {
-    prop.enum = innerDef.values as unknown[]
+  if (innerType === 'enum' && innerDef?.entries && typeof innerDef.entries === 'object') {
+    prop.enum = Object.keys(innerDef.entries as Record<string, unknown>)
   }
   return { prop, optional: isOptional }
 }
