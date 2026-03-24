@@ -227,3 +227,175 @@ describe('getMissingRequiredKeys', () => {
     expect(missing).toEqual(['apiKey'])
   })
 })
+
+describe('getSchemaEntries - Zod-like mock objects', () => {
+  test('extracts entries from Zod-like shape', () => {
+    const mockSchema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'zod',
+        validate: () => ({ value: {} }),
+      },
+      shape: {
+        name: {
+          _def: { typeName: 'ZodString' },
+        },
+        count: {
+          _def: { typeName: 'ZodNumber' },
+        },
+        active: {
+          _def: { typeName: 'ZodBoolean' },
+        },
+      },
+    }
+
+    const entries = getSchemaEntries(mockSchema)
+
+    expect(entries).toHaveLength(3)
+    expect(entries[0]).toEqual({
+      key: 'name',
+      type: 'string',
+      required: true,
+      default: undefined,
+      description: undefined,
+    })
+    expect(entries[1]).toEqual({
+      key: 'count',
+      type: 'number',
+      required: true,
+      default: undefined,
+      description: undefined,
+    })
+    expect(entries[2]).toEqual({
+      key: 'active',
+      type: 'boolean',
+      required: true,
+      default: undefined,
+      description: undefined,
+    })
+  })
+
+  test('handles ZodOptional entries', () => {
+    const mockSchema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'zod',
+        validate: () => ({ value: {} }),
+      },
+      shape: {
+        name: {
+          _def: {
+            typeName: 'ZodOptional',
+            innerType: {
+              _def: { typeName: 'ZodString' },
+            },
+          },
+        },
+      },
+    }
+
+    const entries = getSchemaEntries(mockSchema)
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0].key).toBe('name')
+    expect(entries[0].type).toBe('string')
+    expect(entries[0].required).toBe(false)
+  })
+
+  test('handles ZodDefault entries', () => {
+    const mockSchema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'zod',
+        validate: () => ({ value: {} }),
+      },
+      shape: {
+        verbose: {
+          _def: {
+            typeName: 'ZodDefault',
+            defaultValue: false,
+            innerType: {
+              _def: { typeName: 'ZodBoolean' },
+            },
+          },
+        },
+      },
+    }
+
+    const entries = getSchemaEntries(mockSchema)
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0].key).toBe('verbose')
+    expect(entries[0].type).toBe('boolean')
+    expect(entries[0].required).toBe(false)
+    expect(entries[0].default).toBe(false)
+  })
+
+  test('handles ZodDefault with function default', () => {
+    const mockSchema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'zod',
+        validate: () => ({ value: {} }),
+      },
+      shape: {
+        name: {
+          _def: {
+            typeName: 'ZodDefault',
+            defaultValue: () => 'default-val',
+            innerType: {
+              _def: { typeName: 'ZodString' },
+            },
+          },
+        },
+      },
+    }
+
+    const entries = getSchemaEntries(mockSchema)
+
+    expect(entries[0].default).toBe('default-val')
+  })
+
+  test('handles unknown Zod types', () => {
+    const mockSchema = {
+      '~standard': {
+        version: 1 as const,
+        vendor: 'zod',
+        validate: () => ({ value: {} }),
+      },
+      shape: {
+        data: {
+          _def: { typeName: 'ZodUnknown' },
+        },
+      },
+    }
+
+    const entries = getSchemaEntries(mockSchema)
+
+    expect(entries[0].type).toBe('unknown')
+  })
+})
+
+describe('getSchemaEntries - edge cases', () => {
+  test('handles valibot nullish wrapper', () => {
+    const schema = v.object({
+      name: v.nullish(v.string(), 'default-name'),
+    })
+
+    const entries = getSchemaEntries(schema)
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0].required).toBe(false)
+    expect(entries[0].default).toBe('default-name')
+  })
+
+  test('handles valibot optional with function default', () => {
+    const schema = v.object({
+      list: v.optional(v.string(), () => 'computed'),
+    })
+
+    const entries = getSchemaEntries(schema)
+
+    expect(entries[0].default).toBe('computed')
+  })
+})

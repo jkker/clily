@@ -6,6 +6,7 @@ import { promptForMissing } from '../src/prompt.ts'
 vi.mock('@clack/prompts', () => ({
   intro: vi.fn(),
   outro: vi.fn(),
+  cancel: vi.fn(),
   text: vi.fn(async () => 'user-input-value'),
   confirm: vi.fn(async () => true),
   isCancel: vi.fn(() => false),
@@ -83,5 +84,39 @@ describe('promptForMissing', () => {
 
     expect(p.intro).toHaveBeenCalledWith('Missing required config.')
     expect(p.outro).toHaveBeenCalledWith('Configuration complete.')
+  })
+
+  test('exits when text prompt is cancelled', async () => {
+    const p = await import('@clack/prompts')
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    vi.mocked(p.isCancel).mockReturnValueOnce(true)
+
+    const entries = [{ key: 'name', type: 'string' as const, required: true }]
+
+    await expect(promptForMissing(['name'], entries)).rejects.toThrow('process.exit called')
+
+    expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
+    expect(mockExit).toHaveBeenCalledWith(0)
+    mockExit.mockRestore()
+    vi.mocked(p.isCancel).mockReturnValue(false)
+  })
+
+  test('exits when confirm prompt is cancelled', async () => {
+    const p = await import('@clack/prompts')
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit called')
+    })
+    vi.mocked(p.isCancel).mockReturnValueOnce(true)
+
+    const entries = [{ key: 'flag', type: 'boolean' as const, required: true }]
+
+    await expect(promptForMissing(['flag'], entries)).rejects.toThrow('process.exit called')
+
+    expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
+    expect(mockExit).toHaveBeenCalledWith(0)
+    mockExit.mockRestore()
+    vi.mocked(p.isCancel).mockReturnValue(false)
   })
 })

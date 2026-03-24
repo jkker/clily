@@ -794,4 +794,114 @@ describe('Subcommand run handler', () => {
 
     expect(handler).toHaveBeenCalled()
   })
+
+  test('subcommand with nested children', async () => {
+    mockLoadConfig.mockResolvedValueOnce({ config: {}, layers: [] })
+
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          description: 'Deploy',
+          children: {
+            staging: {
+              description: 'Deploy to staging',
+              args: v.object({
+                env: v.optional(v.string(), 'staging'),
+              }),
+              handler: async () => {},
+            },
+          },
+        },
+      },
+    })
+
+    // The defineCommand is called for: root, deploy, staging
+    expect(mockDefineCommand).toHaveBeenCalledTimes(3)
+    expect(mockDefineCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        meta: {
+          name: 'staging',
+          description: 'Deploy to staging',
+        },
+      }),
+    )
+  })
+
+  test('subcommand re-validation exits on failure after TTY prompt', async () => {
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+    mockHasTTY = true
+    mockIsCI = false
+    mockLoadConfig.mockResolvedValueOnce({ config: {}, layers: [] })
+
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          args: v.object({
+            count: v.pipe(v.number(), v.minValue(1)),
+          }),
+          handler: async () => {},
+        },
+      },
+    })
+
+    await expect(
+      subRunHandlers['deploy']({
+        rawArgs: [],
+        args: {},
+        cmd: {},
+      }),
+    ).rejects.toThrow('exit')
+
+    expect(mockExit).toHaveBeenCalledWith(1)
+    mockExit.mockRestore()
+  })
+})
+
+describe('Root command TTY re-validation', () => {
+  let rootRunHandler: (ctx: Record<string, unknown>) => Promise<void>
+
+  beforeEach(() => {
+    mockDefineCommand.mockClear()
+    mockLoadConfig.mockClear()
+    mockHasTTY = false
+    mockIsCI = true
+
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => {
+      rootRunHandler = def.run as (ctx: Record<string, unknown>) => Promise<void>
+      return def
+    })
+    mockRunMain.mockResolvedValue(undefined)
+  })
+
+  test('root command re-validation exits on failure after TTY prompt', async () => {
+    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit')
+    })
+    mockHasTTY = true
+    mockIsCI = false
+    mockLoadConfig.mockResolvedValueOnce({ config: {}, layers: [] })
+
+    clily({
+      name: 'mycli',
+      args: v.object({
+        count: v.pipe(v.number(), v.minValue(1)),
+      }),
+      handler: async () => {},
+    })
+
+    await expect(
+      rootRunHandler({
+        rawArgs: [],
+        args: {},
+        cmd: {},
+      }),
+    ).rejects.toThrow('exit')
+
+    expect(mockExit).toHaveBeenCalledWith(1)
+    mockExit.mockRestore()
+  })
 })
