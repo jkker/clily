@@ -1,31 +1,30 @@
 /**
  * Interactive prompt fallback for clily.
  *
- * When required schema fields are missing and the terminal is interactive (TTY),
+ * When required fields are missing in a TTY environment,
  * prompts the user via @clack/prompts instead of exiting with an error.
  */
 import * as p from '@clack/prompts'
 
-import type { SchemaEntry } from './types.ts'
+import type { JsonSchema } from './types.ts'
 
 /**
  * Prompt the user for missing required fields using @clack/prompts.
- * Returns an object with the user-provided values.
+ * Uses JSON Schema property metadata for labels and types.
  */
 export async function promptForMissing(
   missingKeys: string[],
-  entries: SchemaEntry[],
+  schema: JsonSchema,
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {}
-  const entryMap = new Map(entries.map((e) => [e.key, e]))
 
   p.intro('Missing required config.')
 
   for (const key of missingKeys) {
-    const entry = entryMap.get(key)
-    const label = entry?.description ?? `Enter ${key}`
+    const prop = schema.properties[key]
+    const label = prop?.description ?? `Enter ${key}`
 
-    if (entry?.type === 'boolean') {
+    if (prop?.type === 'boolean') {
       const value = await p.confirm({ message: label })
       if (p.isCancel(value)) {
         p.cancel('Operation cancelled.')
@@ -35,7 +34,7 @@ export async function promptForMissing(
     } else {
       const value = await p.text({
         message: label,
-        placeholder: entry?.description,
+        placeholder: prop?.description,
       })
       if (p.isCancel(value)) {
         p.cancel('Operation cancelled.')

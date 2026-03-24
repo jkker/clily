@@ -1,11 +1,11 @@
 /**
  * CLI argument parsing utilities for clily.
  *
- * Converts Standard Schema metadata to citty arg definitions and parses argv.
+ * Converts JSON Schema metadata to citty arg definitions and normalizes argv.
  */
 import type { ArgsDef } from 'citty'
 
-import type { SchemaEntry } from './types.ts'
+import type { JsonSchema } from './types.ts'
 
 /**
  * Convert a camelCase key to a kebab-case CLI flag.
@@ -24,26 +24,60 @@ export function kebabToCamel(key: string): string {
 }
 
 /**
- * Convert schema entries to citty ArgsDef format.
+ * Convert a dot-separated key to a nested object path.
+ * e.g., 'config.server' with value 'localhost' → { config: { server: 'localhost' } }
  */
-export function schemaToCittyArgs(entries: SchemaEntry[]): ArgsDef {
+export function setNestedValue(obj: Record<string, unknown>, key: string, value: unknown): void {
+  const parts = key.split('.')
+  let current: Record<string, unknown> = obj
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i]
+    if (!(part in current) || typeof current[part] !== 'object') {
+      current[part] = {}
+    }
+    current = current[part] as Record<string, unknown>
+  }
+  current[parts[parts.length - 1]] = value
+}
+
+/**
+ * Convert a JSON Schema to citty ArgsDef format.
+ * Handles nested properties via dot-notation keys.
+ */
+export function jsonSchemaToCittyArgs(schema: JsonSchema, prefix = ''): ArgsDef {
   const argsDef: ArgsDef = {}
 
-  for (const entry of entries) {
-    const kebabKey = camelToKebab(entry.key)
-    if (entry.type === 'boolean') {
-      argsDef[kebabKey] = {
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    const cliKey = camelToKebab(fullKey)
+
+    // Recurse for nested object properties
+    if (prop.type === 'object' && prop.properties && Object.keys(prop.properties).length > 0) {
+      const nested = jsonSchemaToCittyArgs(
+        {
+          type: 'object',
+          properties: prop.properties,
+          required: prop.required ?? [],
+        },
+        fullKey,
+      )
+      Object.assign(argsDef, nested)
+      continue
+    }
+
+    if (prop.type === 'boolean') {
+      argsDef[cliKey] = {
         type: 'boolean',
-        description: entry.description ?? '',
+        description: prop.description ?? '',
         required: false,
-        default: entry.default as boolean | undefined,
+        default: prop.default as boolean | undefined,
       }
     } else {
-      argsDef[kebabKey] = {
+      argsDef[cliKey] = {
         type: 'string',
-        description: entry.description ?? '',
+        description: prop.description ?? '',
         required: false,
-        default: entry.default as string | undefined,
+        default: prop.default as string | undefined,
       }
     }
   }
@@ -53,7 +87,7 @@ export function schemaToCittyArgs(entries: SchemaEntry[]): ArgsDef {
 
 /**
  * Parse raw argv into a flat object, converting kebab-case keys to camelCase.
- * Strips undefined values.
+ * Supports dot-notation for nested values.
  */
 export function normalizeArgs(parsed: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
@@ -61,7 +95,11 @@ export function normalizeArgs(parsed: Record<string, unknown>): Record<string, u
   for (const [key, value] of Object.entries(parsed)) {
     if (value === undefined || key === '_') continue
     const camelKey = kebabToCamel(key)
-    result[camelKey] = value
+    if (camelKey.includes('.')) {
+      setNestedValue(result, camelKey, value)
+    } else {
+      result[camelKey] = value
+    }
   }
 
   return result

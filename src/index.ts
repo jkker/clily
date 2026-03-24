@@ -11,79 +11,63 @@ import consola from 'consola'
 import { defu } from 'defu'
 import { hasTTY, isCI } from 'std-env'
 
-import { normalizeArgs, schemaToCittyArgs } from './args.ts'
+import { jsonSchemaToCittyArgs, normalizeArgs } from './args.ts'
 import { loadClilyConfig } from './config.ts'
 import { resolveEnvVars } from './env.ts'
-import { generateHelp } from './help.ts'
+import { generateChildHelp, generateHelp } from './help.ts'
 import { promptForMissing } from './prompt.ts'
 import {
-  getMissingRequiredKeys,
-  getSchemaDefaults,
-  getSchemaEntries,
+  coerceTypes,
+  getDefaults,
+  getMissingRequired,
+  toJsonSchema,
   validateSchema,
 } from './schema.ts'
-import type { ClilyChildConfig, ClilyConfig, SchemaEntry } from './types.ts'
+import type { ClilyChildSimple, ClilyHooks, ClilyOptions, JsonSchema } from './types.ts'
 
-export type { ClilyChildConfig, ClilyConfig, ClilyHooks, SchemaEntry } from './types.ts'
-export { generateHelp } from './help.ts'
+export type {
+  ClilyChildSimple,
+  ClilyHooks,
+  ClilyOptions,
+  InferOutput,
+  JsonSchema,
+  JsonSchemaProperty,
+  MergedOutput,
+  Prettify,
+  TypedChildren,
+} from './types.ts'
 export {
-  getSchemaDefaults,
-  getSchemaEntries,
-  getMissingRequiredKeys,
+  coerceTypes,
+  getDefaults,
+  getMissingRequired,
+  toJsonSchema,
   validateSchema,
 } from './schema.ts'
+export { generateChildHelp, generateHelp } from './help.ts'
 export { resolveEnvVars, toEnvPrefix } from './env.ts'
 export { camelToKebab, kebabToCamel, normalizeArgs } from './args.ts'
 
-/**
- * Build citty ArgsDef from flags + args schemas.
- */
-export function buildArgsDef(flagEntries: SchemaEntry[], argEntries: SchemaEntry[]): ArgsDef {
+// ─── Internal Helpers ────────────────────────────────────
+
+/** Build citty ArgsDef from flags + args JSON Schemas. */
+function buildArgsDef(flagSchema: JsonSchema | null, argSchema: JsonSchema | null): ArgsDef {
   return {
-    ...schemaToCittyArgs(flagEntries),
-    ...schemaToCittyArgs(argEntries),
+    ...(flagSchema ? jsonSchemaToCittyArgs(flagSchema) : {}),
+    ...(argSchema ? jsonSchemaToCittyArgs(argSchema) : {}),
   }
 }
 
-/**
- * Merge config layers in priority order:
- * CLI args > env vars > local config > schema defaults
- */
-export function mergeConfigLayers(
+/** Merge config layers in priority order: CLI > env > file config > defaults */
+function mergeConfigLayers(
   cliArgs: Record<string, unknown>,
   envVars: Record<string, unknown>,
   fileConfig: Record<string, unknown>,
   schemaDefaults: Record<string, unknown>,
 ): Record<string, unknown> {
-  // defu merges with first arg having highest priority
   return defu(cliArgs, envVars, fileConfig, schemaDefaults)
 }
 
-/**
- * Coerce string values to their expected types based on schema entries.
- */
-export function coerceValues(
-  data: Record<string, unknown>,
-  entries: SchemaEntry[],
-): Record<string, unknown> {
-  const result = { ...data }
-  for (const entry of entries) {
-    const val = result[entry.key]
-    if (val === undefined) continue
-    if (entry.type === 'boolean' && typeof val === 'string') {
-      if (val === 'true' || val === '1') result[entry.key] = true
-      else if (val === 'false' || val === '0') result[entry.key] = false
-    } else if (entry.type === 'number' && typeof val === 'string') {
-      const num = Number(val)
-      if (!Number.isNaN(num)) result[entry.key] = num
-    }
-  }
-  return result
-}
-
-/**
- * Format and log validation issues using consola.
- */
+/** Format and log validation issues. */
 function logValidationIssues(issues: readonly StandardSchemaV1.Issue[]): void {
   for (const issue of issues) {
     const path =
@@ -94,183 +78,249 @@ function logValidationIssues(issues: readonly StandardSchemaV1.Issue[]): void {
   }
 }
 
-/**
- * Handle validation failure: prompt in TTY, error in CI.
- */
-export async function handleValidationFailure(
+/** Handle validation failure: prompt in TTY, error in CI. */
+async function handleValidationFailure(
   issues: readonly StandardSchemaV1.Issue[],
   mergedConfig: Record<string, unknown>,
-  allEntries: SchemaEntry[],
-  mergedSchema: StandardSchemaV1 | undefined,
-  config: ClilyConfig | ClilyChildConfig,
+  mergedSchema: JsonSchema,
+  hooks?: ClilyHooks,
 ): Promise<Record<string, unknown> | null> {
-  // Call onValidationError hook
-  if (config.hooks?.onValidationError) {
-    await config.hooks.onValidationError(issues)
+  if (hooks?.onValidationError) {
+    await hooks.onValidationError(issues)
   }
 
   if (hasTTY && !isCI) {
-    // Interactive mode: prompt for missing required fields
-    const missingKeys = mergedSchema
-      ? getMissingRequiredKeys(mergedSchema, mergedConfig)
-      : issues
-          .filter((i) => i.path && i.path.length > 0)
-          .map((i) => {
-            const seg = i.path![0]
-            return typeof seg === 'object' ? String(seg.key) : String(seg)
-          })
-
+    const missingKeys = getMissingRequired(mergedSchema, mergedConfig)
     if (missingKeys.length > 0) {
-      if (config.hooks?.onPromptSelect) {
-        await config.hooks.onPromptSelect(missingKeys)
+      if (hooks?.onPromptSelect) {
+        await hooks.onPromptSelect(missingKeys)
       }
-      const prompted = await promptForMissing(missingKeys, allEntries)
+      const prompted = await promptForMissing(missingKeys, mergedSchema)
       return { ...mergedConfig, ...prompted }
     }
-
-    // Non-missing-key errors (type errors etc.)
     logValidationIssues(issues)
     return null
   } else {
-    // CI/non-TTY: print errors and return null (caller should exit)
     logValidationIssues(issues)
     return null
   }
 }
 
-/**
- * Build a citty subcommand from a ClilyChildConfig.
- */
-function buildSubCommand(
+/** Resolve, validate, and execute a command handler. */
+async function resolveAndRun(
   name: string,
-  childConfig: ClilyChildConfig,
-  rootConfig: ClilyConfig,
+  parsedArgs: Record<string, unknown>,
+  schemas: StandardSchemaV1[],
+  mergedJsonSchema: JsonSchema,
+  schemaDefaults: Record<string, unknown>,
+  hooks: ClilyHooks | undefined,
+  debug: boolean,
+  handler?: (args: Record<string, unknown>) => void | Promise<void>,
+): Promise<void> {
+  const cliArgs = normalizeArgs(parsedArgs)
+  const envVars = resolveEnvVars(name)
+  let fileConfig: Record<string, unknown> = {}
+  try {
+    fileConfig = await loadClilyConfig({ name })
+  } catch {
+    // Config file loading is optional
+  }
+
+  let mergedConfig = mergeConfigLayers(cliArgs, envVars, fileConfig, schemaDefaults)
+  mergedConfig = coerceTypes(mergedConfig, mergedJsonSchema)
+
+  if (hooks?.onValidate) {
+    await hooks.onValidate(mergedConfig)
+  }
+
+  // Validate against each schema
+  for (const schema of schemas) {
+    const result = await validateSchema(schema, mergedConfig)
+    if (!result.success) {
+      const fixed = await handleValidationFailure(
+        result.issues,
+        mergedConfig,
+        mergedJsonSchema,
+        hooks,
+      )
+      if (!fixed) {
+        process.exit(1)
+      }
+      mergedConfig = coerceTypes(fixed, mergedJsonSchema)
+
+      // Re-validate
+      const reResult = await validateSchema(schema, mergedConfig)
+      if (!reResult.success) {
+        logValidationIssues(reResult.issues)
+        process.exit(1)
+      }
+    }
+  }
+
+  if (debug) {
+    consola.debug('Resolved config:', mergedConfig)
+  }
+
+  if (handler) {
+    await handler(mergedConfig)
+  }
+}
+
+// ─── Subcommand Builder ──────────────────────────────────
+
+function buildSubCommand(
+  cmdName: string,
+  childConfig: ClilyChildSimple,
+  rootName: string,
+  rootFlagsSchema: JsonSchema | null,
+  rootFlags: StandardSchemaV1 | undefined,
+  rootHooks: ClilyHooks | undefined,
+  debug: boolean,
 ): CommandDef {
-  const flagEntries = rootConfig.flags ? getSchemaEntries(rootConfig.flags) : []
-  const argEntries = childConfig.args ? getSchemaEntries(childConfig.args) : []
-  const allEntries = [...flagEntries, ...argEntries]
+  const argSchema = childConfig.args ? toJsonSchema(childConfig.args) : null
+  const cittyArgs = buildArgsDef(rootFlagsSchema, argSchema)
 
-  const cittyArgs = buildArgsDef(flagEntries, argEntries)
+  const flagDefaults = rootFlagsSchema ? getDefaults(rootFlagsSchema) : {}
+  const argDefaults = argSchema ? getDefaults(argSchema) : {}
+  const schemaDefaults = { ...flagDefaults, ...argDefaults }
 
-  // Build nested subcommands recursively
+  const mergedJsonSchema: JsonSchema = {
+    type: 'object',
+    properties: {
+      ...rootFlagsSchema?.properties,
+      ...argSchema?.properties,
+    },
+    required: [...(rootFlagsSchema?.required ?? []), ...(argSchema?.required ?? [])],
+  }
+
+  const schemas: StandardSchemaV1[] = []
+  if (rootFlags) schemas.push(rootFlags)
+  if (childConfig.args) schemas.push(childConfig.args)
+
+  // Build nested subcommands
   const subCommands: SubCommandsDef | undefined = childConfig.children
     ? Object.fromEntries(
         Object.entries(childConfig.children).map(([subName, subConfig]) => [
           subName,
-          buildSubCommand(subName, subConfig, rootConfig),
+          buildSubCommand(
+            subName,
+            subConfig,
+            rootName,
+            rootFlagsSchema,
+            rootFlags,
+            rootHooks,
+            debug,
+          ),
         ]),
       )
     : undefined
 
   return defineCommand({
-    meta: {
-      name,
-      description: childConfig.description,
-    },
+    meta: { name: cmdName, description: childConfig.description },
     args: cittyArgs,
     subCommands,
     run: async ({ args: parsedArgs }) => {
-      // Check for --help
       if ((parsedArgs as Record<string, unknown>)['help']) {
-        const helpText = generateHelp(childConfig, [rootConfig.name, name])
+        const helpText = generateChildHelp(childConfig, rootFlagsSchema, [rootName, cmdName])
         const mutated = childConfig.hooks?.onHelp
           ? await childConfig.hooks.onHelp(helpText)
-          : rootConfig.hooks?.onHelp
-            ? await rootConfig.hooks.onHelp(helpText)
+          : rootHooks?.onHelp
+            ? await rootHooks.onHelp(helpText)
             : undefined
         console.log(typeof mutated === 'string' ? mutated : helpText)
         return
       }
 
-      // Merge config layers
-      const cliArgs = normalizeArgs(parsedArgs as unknown as Record<string, unknown>)
-      const envVars = resolveEnvVars(rootConfig.name)
-      let fileConfig: Record<string, unknown> = {}
-      try {
-        fileConfig = await loadClilyConfig({ name: rootConfig.name })
-      } catch {
-        // Config file loading is optional
-      }
-
-      const flagDefaults = rootConfig.flags ? getSchemaDefaults(rootConfig.flags) : {}
-      const argDefaults = childConfig.args ? getSchemaDefaults(childConfig.args) : {}
-      const schemaDefaults = { ...flagDefaults, ...argDefaults }
-
-      let mergedConfig = mergeConfigLayers(cliArgs, envVars, fileConfig, schemaDefaults)
-
-      // Coerce types
-      mergedConfig = coerceValues(mergedConfig, allEntries)
-
-      // Call onValidate hook
-      if (childConfig.hooks?.onValidate) {
-        await childConfig.hooks.onValidate(mergedConfig)
-      } else if (rootConfig.hooks?.onValidate) {
-        await rootConfig.hooks.onValidate(mergedConfig)
-      }
-
-      // Build a merged schema for validation if we have args
-      const schemasToValidate: StandardSchemaV1[] = []
-      if (rootConfig.flags) schemasToValidate.push(rootConfig.flags)
-      if (childConfig.args) schemasToValidate.push(childConfig.args)
-
-      // Validate against each schema
-      for (const schema of schemasToValidate) {
-        const result = await validateSchema(schema, mergedConfig)
-        if (!result.success) {
-          const fixed = await handleValidationFailure(
-            result.issues,
-            mergedConfig,
-            allEntries,
-            schema,
-            childConfig,
-          )
-          if (!fixed) {
-            process.exit(1)
-          }
-          mergedConfig = coerceValues(fixed, allEntries)
-
-          // Re-validate
-          const reResult = await validateSchema(schema, mergedConfig)
-          if (!reResult.success) {
-            for (const issue of reResult.issues) {
-              consola.error(issue.message)
-            }
-            process.exit(1)
-          }
-        }
-      }
-
-      if (rootConfig.debug) {
-        consola.debug('Resolved config:', mergedConfig)
-      }
-
-      // Execute handler
-      if (childConfig.handler) {
-        await childConfig.handler(mergedConfig)
-      }
+      await resolveAndRun(
+        rootName,
+        parsedArgs as unknown as Record<string, unknown>,
+        schemas,
+        mergedJsonSchema,
+        schemaDefaults,
+        childConfig.hooks ?? rootHooks,
+        debug,
+        childConfig.handler as
+          | ((args: Record<string, unknown>) => void | Promise<void>)
+          | undefined,
+      )
     },
   })
 }
 
+// ─── Main API ────────────────────────────────────────────
+
 /**
  * Create a clily CLI instance.
  *
- * @param config - The CLI configuration
- * @returns An async function that bootstraps parsing, resolution, validation, prompting, and execution
+ * The function signature uses advanced generics to ensure end-to-end type safety:
+ * - Root handler receives the merged output of `flags` & `args` schemas.
+ * - Each child handler receives merged parent `flags` & child `args` schemas.
+ *
+ * @example
+ * ```ts
+ * import { clily } from 'clily'
+ * import * as v from 'valibot'
+ *
+ * const cli = clily({
+ *   name: 'mycli',
+ *   flags: v.object({ verbose: v.optional(v.boolean(), false) }),
+ *   children: {
+ *     deploy: {
+ *       args: v.object({ apiKey: v.string() }),
+ *       handler: async (args) => {
+ *         // args.verbose: boolean  (from flags)
+ *         // args.apiKey: string    (from child args)
+ *       },
+ *     },
+ *   },
+ * })
+ * await cli()
+ * ```
  */
-export function clily(config: ClilyConfig): () => Promise<void> {
-  const flagEntries = config.flags ? getSchemaEntries(config.flags) : []
-  const argEntries = config.args ? getSchemaEntries(config.args) : []
-  const allEntries = [...flagEntries, ...argEntries]
-  const cittyArgs = buildArgsDef(flagEntries, argEntries)
+export function clily<
+  TFlags extends StandardSchemaV1 | undefined = undefined,
+  TArgs extends StandardSchemaV1 | undefined = undefined,
+  const TChildren extends Record<string, { args?: StandardSchemaV1 }> = Record<never, never>,
+>(config: ClilyOptions<TFlags, TArgs, TChildren>): () => Promise<void> {
+  const flagSchema = config.flags ? toJsonSchema(config.flags as StandardSchemaV1) : null
+  const argSchema = config.args ? toJsonSchema(config.args as StandardSchemaV1) : null
 
-  // Build subcommands
+  const cittyArgs = buildArgsDef(flagSchema, argSchema)
+
+  const flagDefaults = flagSchema ? getDefaults(flagSchema) : {}
+  const argDefaults = argSchema ? getDefaults(argSchema) : {}
+  const schemaDefaults = { ...flagDefaults, ...argDefaults }
+
+  const mergedJsonSchema: JsonSchema = {
+    type: 'object',
+    properties: {
+      ...flagSchema?.properties,
+      ...argSchema?.properties,
+    },
+    required: [...(flagSchema?.required ?? []), ...(argSchema?.required ?? [])],
+  }
+
+  const schemas: StandardSchemaV1[] = []
+  if (config.flags) schemas.push(config.flags as StandardSchemaV1)
+  if (config.args) schemas.push(config.args as StandardSchemaV1)
+
+  // Build subcommands from children
   const subCommands: SubCommandsDef | undefined = config.children
     ? Object.fromEntries(
-        Object.entries(config.children).map(([name, childConfig]) => [
-          name,
-          buildSubCommand(name, childConfig, config),
-        ]),
+        Object.entries(config.children as Record<string, ClilyChildSimple>).map(
+          ([name, childConfig]) => [
+            name,
+            buildSubCommand(
+              name,
+              childConfig,
+              config.name,
+              flagSchema,
+              config.flags as StandardSchemaV1 | undefined,
+              config.hooks,
+              config.debug ?? false,
+            ),
+          ],
+        ),
       )
     : undefined
 
@@ -283,80 +333,27 @@ export function clily(config: ClilyConfig): () => Promise<void> {
     args: cittyArgs,
     subCommands,
     run: async ({ rawArgs, args: parsedArgs }) => {
-      // Call onParse hook
       if (config.hooks?.onParse) {
         await config.hooks.onParse(rawArgs)
       }
 
-      // Check for --help or no handler (show help)
       if ((parsedArgs as Record<string, unknown>)['help'] || !config.handler) {
-        const helpText = generateHelp(config)
+        const helpText = generateHelp(config as Parameters<typeof generateHelp>[0])
         const mutated = config.hooks?.onHelp ? await config.hooks.onHelp(helpText) : undefined
         console.log(typeof mutated === 'string' ? mutated : helpText)
         return
       }
 
-      // Merge config layers
-      const cliArgs = normalizeArgs(parsedArgs as unknown as Record<string, unknown>)
-      const envVars = resolveEnvVars(config.name)
-      let fileConfig: Record<string, unknown> = {}
-      try {
-        fileConfig = await loadClilyConfig({ name: config.name })
-      } catch {
-        // Config file loading is optional
-      }
-
-      const flagDefaults = config.flags ? getSchemaDefaults(config.flags) : {}
-      const argDefaults = config.args ? getSchemaDefaults(config.args) : {}
-      const schemaDefaults = { ...flagDefaults, ...argDefaults }
-
-      let mergedConfig = mergeConfigLayers(cliArgs, envVars, fileConfig, schemaDefaults)
-
-      // Coerce types
-      mergedConfig = coerceValues(mergedConfig, allEntries)
-
-      // Call onValidate hook
-      if (config.hooks?.onValidate) {
-        await config.hooks.onValidate(mergedConfig)
-      }
-
-      // Validate
-      const schemasToValidate: StandardSchemaV1[] = []
-      if (config.flags) schemasToValidate.push(config.flags)
-      if (config.args) schemasToValidate.push(config.args)
-
-      for (const schema of schemasToValidate) {
-        const result = await validateSchema(schema, mergedConfig)
-        if (!result.success) {
-          const fixed = await handleValidationFailure(
-            result.issues,
-            mergedConfig,
-            allEntries,
-            schema,
-            config,
-          )
-          if (!fixed) {
-            process.exit(1)
-          }
-          mergedConfig = coerceValues(fixed, allEntries)
-
-          // Re-validate
-          const reResult = await validateSchema(schema, mergedConfig)
-          if (!reResult.success) {
-            for (const issue of reResult.issues) {
-              consola.error(issue.message)
-            }
-            process.exit(1)
-          }
-        }
-      }
-
-      if (config.debug) {
-        consola.debug('Resolved config:', mergedConfig)
-      }
-
-      // Execute root handler
-      await config.handler(mergedConfig)
+      await resolveAndRun(
+        config.name,
+        parsedArgs as unknown as Record<string, unknown>,
+        schemas,
+        mergedJsonSchema,
+        schemaDefaults,
+        config.hooks,
+        config.debug ?? false,
+        config.handler as ((args: Record<string, unknown>) => void | Promise<void>) | undefined,
+      )
     },
   })
 
