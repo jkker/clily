@@ -1,16 +1,16 @@
 {
   "name": "clily",
   "version": "0.0.0",
-  "description": "A starter for creating a TypeScript package.",
-  "homepage": "https://github.com/author/library#readme",
+  "description": "A modern, ergonomic TypeScript CLI framework with Standard Schema validation",
+  "homepage": "https://github.com/Jkker/clily#readme",
   "bugs": {
-    "url": "https://github.com/author/library/issues"
+    "url": "https://github.com/Jkker/clily/issues"
   },
   "license": "MIT",
   "author": "Author Name <author.name@mail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/author/library.git"
+    "url": "git+https://github.com/Jkker/clily.git"
   },
   "files": [
     "dist"
