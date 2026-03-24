@@ -42,6 +42,15 @@ function zodTypeToJsonType(zType: string | undefined): string | undefined {
   return undefined
 }
 
+/** Unwrap a Zod optional/default to get the inner type's definition. */
+function getZodInnerDef(
+  def: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const innerType = def?.innerType as Record<string, unknown> | undefined
+  const innerZod = innerType?._zod as Record<string, unknown> | undefined
+  return innerZod?.def as Record<string, unknown> | undefined
+}
+
 function zodEntryToProperty(raw: Record<string, unknown>): {
   prop: JsonSchemaProperty
   optional: boolean
@@ -51,10 +60,7 @@ function zodEntryToProperty(raw: Record<string, unknown>): {
   const def = zod?.def as Record<string, unknown> | undefined
   const defType = def?.type as string | undefined
   const isOptional = defType === 'optional' || defType === 'default'
-  const innerDef = isOptional
-    ? (((def?.innerType as Record<string, unknown>)?._zod as Record<string, unknown> | undefined)
-        ?.def as Record<string, unknown> | undefined)
-    : def
+  const innerDef = isOptional ? getZodInnerDef(def) : def
   const innerType = innerDef?.type as string | undefined
   const prop: JsonSchemaProperty = {}
   const jsonType = zodTypeToJsonType(innerType)

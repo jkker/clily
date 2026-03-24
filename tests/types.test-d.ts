@@ -4,7 +4,7 @@
  * These tests verify that handler parameter types are correctly inferred
  * from Standard Schema definitions using Valibot and Zod.
  *
- * Run with: vp test --typecheck
+ * Run with: vp test --typecheck --run
  */
 import * as v from 'valibot'
 import { describe, expectTypeOf, test } from 'vite-plus/test'

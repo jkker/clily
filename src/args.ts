@@ -94,12 +94,7 @@ export function normalizeArgs(parsed: Record<string, unknown>): Record<string, u
 
   for (const [key, value] of Object.entries(parsed)) {
     if (value === undefined || key === '_') continue
-    const camelKey = kebabToCamel(key)
-    if (camelKey.includes('.')) {
-      setNestedValue(result, camelKey, value)
-    } else {
-      result[camelKey] = value
-    }
+    setNestedValue(result, kebabToCamel(key), value)
   }
 
   return result
