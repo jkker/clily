@@ -1247,7 +1247,7 @@ describe('Completion command E2E', () => {
     await run()
 
     expect(mockRunMain).not.toHaveBeenCalled()
-    expect(consoleSpy.mock.calls[0][0]).toContain('complete -F')
+    expect(consoleSpy.mock.calls[0][0]).toContain('compdef')
     consoleSpy.mockRestore()
   })
 
