@@ -1,0 +1,14 @@
+{
+  "name": "@clily/example-zod-bun-bash",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "bun run src/index.ts",
+    "verify": "bun run src/index.ts build --format=cjs --minify=false --registry=https://registry.example.test",
+    "verify:completion": "bun run src/index.ts completion bash"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}

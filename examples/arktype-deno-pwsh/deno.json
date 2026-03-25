@@ -1,0 +1,19 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@clily/core": "../../packages/core/dist/index.mjs",
+    "@clack/prompts": "npm:@clack/prompts@1.1.0",
+    "@standard-schema/spec": "npm:@standard-schema/spec@1.1.0",
+    "c12": "npm:c12@4.0.0-beta.4",
+    "citty": "npm:citty@0.2.1",
+    "consola": "npm:consola@3.4.2",
+    "consola/utils": "npm:consola@3.4.2/utils",
+    "defu": "npm:defu@6.1.4",
+    "omelette": "npm:omelette@0.4.17",
+    "std-env": "npm:std-env@4.0.0"
+  },
+  "tasks": {
+    "run": "deno run -A --config deno.json src/index.ts",
+    "completion:pwsh": "deno run -A --config deno.json src/index.ts completion pwsh"
+  }
+}

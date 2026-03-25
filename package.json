@@ -1,0 +1,27 @@
+{
+  "name": "@clily/monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ready": "vp run check && vp run test && vp run validate:dist && vp run validate:examples:docker",
+    "build": "cd packages/core && vp pack",
+    "check": "cd packages/core && vp run check",
+    "test": "cd packages/core && vp run test",
+    "validate:dist": "cd packages/core && vp run validate:dist",
+    "validate:examples:docker": "bash ./scripts/validate-examples-docker.sh",
+    "prepare": "vp config"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "7.0.0-dev.20260316.1",
+    "@vitest/coverage-v8": "^4.1.1",
+    "bumpp": "^11.0.1",
+    "typescript": "^5.9.3",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

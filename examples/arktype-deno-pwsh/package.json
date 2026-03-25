@@ -1,0 +1,16 @@
+{
+  "name": "@clily/example-arktype-deno-pwsh",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node --experimental-strip-types src/index.ts",
+    "verify": "node --experimental-strip-types src/index.ts",
+    "verify:completion": "node --experimental-strip-types src/index.ts completion pwsh",
+    "run:deno": "deno run -A --config deno.json src/index.ts",
+    "verify:completion:deno": "deno run -A --config deno.json src/index.ts completion pwsh"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "arktype": "^2.2.0"
+  }
+}

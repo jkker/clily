@@ -1,0 +1,16 @@
+{
+  "name": "@clily/example-valibot-node-fish-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node --experimental-strip-types src/index.ts",
+    "verify": "node --experimental-strip-types src/index.ts completion fish"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "valibot": "^1.3.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
