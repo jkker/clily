@@ -32,12 +32,15 @@ export function setNestedValue(obj: Record<string, unknown>, key: string, value:
   let current: Record<string, unknown> = obj
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i]
+    if (part === '__proto__' || part === 'constructor' || part === 'prototype') return
     if (!(part in current) || typeof current[part] !== 'object') {
       current[part] = {}
     }
     current = current[part] as Record<string, unknown>
   }
-  current[parts[parts.length - 1]] = value
+  const lastPart = parts[parts.length - 1]
+  if (lastPart === '__proto__' || lastPart === 'constructor' || lastPart === 'prototype') return
+  current[lastPart] = value
 }
 
 /**
