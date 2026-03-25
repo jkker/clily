@@ -1,3 +1,7 @@
+import { hasTTY, isBun, isCI, isColorSupported, isDebug, isDeno, isNode, runtime } from 'std-env'
+
+import type { CompletionShell, ExecutionEnvironment } from './types.ts'
+
 /**
  * Environment variable resolution for clily.
  *
@@ -50,4 +54,39 @@ export function resolveEnvVars(
   }
 
   return result
+}
+
+export function inferShell(
+  env: Record<string, string | undefined> = process.env,
+): CompletionShell | null {
+  const shell = env.SHELL?.toLowerCase()
+  if (shell?.includes('bash')) return 'bash'
+  if (shell?.includes('zsh')) return 'zsh'
+  if (shell?.includes('fish')) return 'fish'
+  if (
+    shell?.includes('pwsh') ||
+    shell?.includes('powershell') ||
+    env.TERM_PROGRAM?.toLowerCase().includes('powershell') ||
+    env.PSModulePath
+  ) {
+    return 'pwsh'
+  }
+
+  return null
+}
+
+export function getExecutionEnvironment(
+  env: Record<string, string | undefined> = process.env,
+): ExecutionEnvironment {
+  return {
+    shell: inferShell(env),
+    runtime,
+    isNode,
+    isBun,
+    isDeno,
+    hasTTY,
+    isCI,
+    isDebug,
+    isColorSupported,
+  }
 }

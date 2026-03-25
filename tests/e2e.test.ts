@@ -1,19 +1,28 @@
 /// <reference types="node" />
 import { type as arkType } from 'arktype'
+import consola from 'consola'
 import * as v from 'valibot'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vite-plus/test'
 import { boolean as zBoolean, enum as zEnum, number, object, string } from 'zod'
 
 import { setNestedValue } from '../src/args.ts'
 import {
+  buildCompletionTree,
   camelToKebab,
   clily,
   coerceTypes,
+  extractCompletionShellArg,
+  generateCompletionScript,
   generateHelp,
+  getCompletionCommandNames,
   getDefaults,
+  getExecutionEnvironment,
   getMissingRequired,
+  inferShell,
   kebabToCamel,
   normalizeArgs,
+  normalizeCompletionConfig,
+  resolveCompletionShell,
   resolveEnvVars,
   toEnvPrefix,
   toJsonSchema,
@@ -40,6 +49,12 @@ vi.mock('c12', () => ({
 
 let mockHasTTY = false
 let mockIsCI = true
+let mockIsColorSupported = true
+let mockIsDebug = false
+let mockRuntime = 'node'
+let mockIsNode = true
+let mockIsBun = false
+let mockIsDeno = false
 
 vi.mock('std-env', () => ({
   get hasTTY() {
@@ -48,7 +63,24 @@ vi.mock('std-env', () => ({
   get isCI() {
     return mockIsCI
   },
-  isDebug: false,
+  get isColorSupported() {
+    return mockIsColorSupported
+  },
+  get isDebug() {
+    return mockIsDebug
+  },
+  get runtime() {
+    return mockRuntime
+  },
+  get isNode() {
+    return mockIsNode
+  },
+  get isBun() {
+    return mockIsBun
+  },
+  get isDeno() {
+    return mockIsDeno
+  },
 }))
 
 vi.mock('@clack/prompts', () => ({
@@ -325,6 +357,159 @@ describe('resolveEnvVars', () => {
   test('ignores exact prefix match without suffix', () => {
     const result = resolveEnvVars('mycli', { MYCLI_: 'bad' })
     expect(result).toEqual({})
+  })
+})
+
+describe('std-env integration', () => {
+  test('infers shells from environment variables', () => {
+    expect(inferShell({ SHELL: '/bin/bash' })).toBe('bash')
+    expect(inferShell({ SHELL: '/bin/zsh' })).toBe('zsh')
+    expect(inferShell({ SHELL: '/usr/bin/fish' })).toBe('fish')
+    expect(inferShell({ TERM_PROGRAM: 'PowerShell' })).toBe('pwsh')
+    expect(inferShell({ PSModulePath: '/tmp/modules' })).toBe('pwsh')
+    expect(inferShell({})).toBeNull()
+  })
+
+  test('reports execution environment details', () => {
+    mockHasTTY = true
+    mockIsCI = false
+    mockIsColorSupported = true
+    mockIsDebug = true
+    mockRuntime = 'bun'
+    mockIsNode = false
+    mockIsBun = true
+    mockIsDeno = false
+
+    expect(getExecutionEnvironment({ SHELL: '/bin/zsh' })).toEqual({
+      shell: 'zsh',
+      runtime: 'bun',
+      isNode: false,
+      isBun: true,
+      isDeno: false,
+      hasTTY: true,
+      isCI: false,
+      isDebug: true,
+      isColorSupported: true,
+    })
+  })
+
+  test('reports deno runtime details', () => {
+    mockRuntime = 'deno'
+    mockIsNode = false
+    mockIsBun = false
+    mockIsDeno = true
+
+    expect(getExecutionEnvironment({ SHELL: '/bin/bash' }).runtime).toBe('deno')
+    expect(getExecutionEnvironment({ SHELL: '/bin/bash' }).isDeno).toBe(true)
+  })
+})
+
+describe('completion helpers', () => {
+  test('normalizes completion config defaults', () => {
+    expect(normalizeCompletionConfig(true)).toEqual({
+      command: 'completion',
+      aliases: ['completions'],
+      shell: 'auto',
+      shells: ['bash', 'zsh', 'fish', 'pwsh'],
+    })
+  })
+
+  test('extracts configured command names', () => {
+    expect(getCompletionCommandNames(true)).toEqual(['completion', 'completions'])
+    expect(
+      getCompletionCommandNames({
+        command: 'complete',
+        aliases: ['comp'],
+        shell: 'auto',
+        shells: ['bash'],
+      }),
+    ).toEqual(['complete', 'comp'])
+  })
+
+  test('extracts completion shell argument from argv', () => {
+    expect(extractCompletionShellArg(['completion', 'fish'], ['completion'])).toBe('fish')
+    expect(extractCompletionShellArg(['deploy'], ['completion'])).toBeUndefined()
+    expect(extractCompletionShellArg(['completion', '--help'], ['completion'])).toBeUndefined()
+  })
+
+  test('resolves completion shell from request and env defaults', () => {
+    const completion = normalizeCompletionConfig(true)
+    expect(
+      resolveCompletionShell('pwsh', completion, {
+        shell: 'bash',
+        runtime: 'node',
+        isNode: true,
+        isBun: false,
+        isDeno: false,
+        hasTTY: true,
+        isCI: false,
+        isDebug: false,
+        isColorSupported: true,
+      }),
+    ).toBe('pwsh')
+
+    expect(
+      resolveCompletionShell(undefined, completion, {
+        shell: 'fish',
+        runtime: 'node',
+        isNode: true,
+        isBun: false,
+        isDeno: false,
+        hasTTY: true,
+        isCI: false,
+        isDebug: false,
+        isColorSupported: true,
+      }),
+    ).toBe('fish')
+
+    expect(() =>
+      resolveCompletionShell('invalid', completion, {
+        shell: 'bash',
+        runtime: 'node',
+        isNode: true,
+        isBun: false,
+        isDeno: false,
+        hasTTY: true,
+        isCI: false,
+        isDebug: false,
+        isColorSupported: true,
+      }),
+    ).toThrow('Unsupported completion shell')
+  })
+
+  test('builds completion tree from flags, args, and subcommands', () => {
+    const tree = buildCompletionTree({
+      flags: v.object({
+        verbose: v.optional(v.boolean(), false),
+      }),
+      children: {
+        deploy: {
+          args: v.object({
+            logLevel: v.optional(v.picklist(['info', 'debug']), 'info'),
+          }),
+          handler: async () => {},
+        },
+      },
+      completion: true,
+    })
+
+    expect(tree['--verbose']).toEqual([])
+    expect(tree.deploy).toBeDefined()
+    expect((tree.deploy as Record<string, unknown>)['--log-level']).toEqual(['info', 'debug'])
+    expect(tree.completion).toEqual(['bash', 'zsh', 'fish', 'pwsh'])
+  })
+
+  test('generates bash, fish, and pwsh completion scripts', () => {
+    const tree = buildCompletionTree({
+      children: {
+        deploy: { handler: async () => {} },
+      },
+      completion: true,
+    })
+
+    expect(generateCompletionScript('mycli', tree, 'bash')).toContain('complete -F')
+    expect(generateCompletionScript('mycli', tree, 'fish')).toContain('--compfish')
+    expect(generateCompletionScript('mycli', tree, 'pwsh')).toContain('Register-ArgumentCompleter')
   })
 })
 
@@ -957,6 +1142,7 @@ describe('Debug mode', () => {
 
   test('logs resolved config in debug mode', async () => {
     const handler = vi.fn()
+    const debugSpy = vi.spyOn(consola, 'debug').mockImplementation(() => undefined)
 
     clily({
       name: 'mycli',
@@ -974,6 +1160,171 @@ describe('Debug mode', () => {
     })
 
     expect(handler).toHaveBeenCalled()
+    expect(debugSpy).toHaveBeenCalled()
+    debugSpy.mockRestore()
+  })
+
+  test('uses std-env debug flag as default', async () => {
+    const handler = vi.fn()
+    const debugSpy = vi.spyOn(consola, 'debug').mockImplementation(() => undefined)
+    mockIsDebug = true
+
+    clily({
+      name: 'mycli',
+      args: v.object({
+        name: v.optional(v.string(), 'world'),
+      }),
+      handler,
+    })
+
+    await runHandler({
+      rawArgs: [],
+      args: {},
+      cmd: {},
+    })
+
+    expect(handler).toHaveBeenCalled()
+    expect(debugSpy).toHaveBeenCalled()
+    debugSpy.mockRestore()
+  })
+})
+
+describe('Completion command E2E', () => {
+  const originalArgv = process.argv
+  const originalShell = process.env.SHELL
+  const originalPSModulePath = process.env.PSModulePath
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRuntime = 'node'
+    mockIsNode = true
+    mockIsBun = false
+    mockIsDeno = false
+    mockIsDebug = false
+    mockHasTTY = true
+    mockIsCI = false
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => def)
+    mockRunMain.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    process.argv = originalArgv
+    if (originalShell === undefined) {
+      delete process.env.SHELL
+    } else {
+      process.env.SHELL = originalShell
+    }
+    if (originalPSModulePath === undefined) {
+      delete process.env.PSModulePath
+    } else {
+      process.env.PSModulePath = originalPSModulePath
+    }
+  })
+
+  test('prints inferred zsh completion script from completion command', async () => {
+    process.argv = ['node', 'mycli', 'completion']
+    process.env.SHELL = '/bin/zsh'
+    delete process.env.PSModulePath
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const run = clily({
+      name: 'mycli',
+      completion: true,
+      flags: v.object({
+        verbose: v.optional(v.boolean(), false),
+      }),
+      children: {
+        deploy: {
+          args: v.object({
+            logLevel: v.optional(v.picklist(['info', 'debug']), 'info'),
+          }),
+          handler: async () => {},
+        },
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(mockRunMain).not.toHaveBeenCalled()
+    expect(consoleSpy.mock.calls[0][0]).toContain('complete -F')
+    consoleSpy.mockRestore()
+  })
+
+  test('prints fish completion script when shell is requested explicitly', async () => {
+    process.argv = ['node', 'mycli', 'completions', 'fish']
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const run = clily({
+      name: 'mycli',
+      completion: true,
+      children: {
+        deploy: {
+          handler: async () => {},
+        },
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(consoleSpy.mock.calls[0][0]).toContain('--compfish')
+    consoleSpy.mockRestore()
+  })
+
+  test('prints pwsh completion script in PowerShell environments', async () => {
+    process.argv = ['node', 'mycli', 'completion']
+    delete process.env.SHELL
+    process.env.PSModulePath = '/tmp/modules'
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const run = clily({
+      name: 'mycli',
+      completion: {
+        shell: 'auto',
+      },
+      children: {
+        deploy: {
+          handler: async () => {},
+        },
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(consoleSpy.mock.calls[0][0]).toContain('Register-ArgumentCompleter')
+    consoleSpy.mockRestore()
+  })
+
+  test('includes completion commands in generated help', async () => {
+    let runHandler: (ctx: Record<string, unknown>) => Promise<void>
+    mockDefineCommand.mockImplementation((def: Record<string, unknown>) => {
+      runHandler = def.run as (ctx: Record<string, unknown>) => Promise<void>
+      return def
+    })
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    clily({
+      name: 'mycli',
+      completion: true,
+      children: {
+        deploy: {
+          handler: async () => {},
+        },
+      },
+      handler: async () => {},
+    })
+
+    await runHandler!({
+      rawArgs: ['--help'],
+      args: { help: true },
+      cmd: {},
+    })
+
+    expect(consoleSpy.mock.calls[0][0]).toContain('completion')
+    expect(consoleSpy.mock.calls[0][0]).toContain('completions')
+    consoleSpy.mockRestore()
   })
 })
 
@@ -1352,4 +1703,10 @@ describe('Config file loading error', () => {
 afterEach(() => {
   mockHasTTY = false
   mockIsCI = true
+  mockIsColorSupported = true
+  mockIsDebug = false
+  mockRuntime = 'node'
+  mockIsNode = true
+  mockIsBun = false
+  mockIsDeno = false
 })

@@ -12,8 +12,17 @@ import { defu } from 'defu'
 import { hasTTY, isCI } from 'std-env'
 
 import { jsonSchemaToCittyArgs, normalizeArgs } from './args.ts'
+import {
+  buildCompletionTree,
+  extractCompletionShellArg,
+  generateCompletionScript,
+  getCompletionCommandNames,
+  isCompletionCommand,
+  normalizeCompletionConfig,
+  resolveCompletionShell,
+} from './completion.ts'
 import { loadClilyConfig } from './config.ts'
-import { resolveEnvVars } from './env.ts'
+import { getExecutionEnvironment, resolveEnvVars } from './env.ts'
 import { generateChildHelp, generateHelp } from './help.ts'
 import { promptForMissing } from './prompt.ts'
 import {
@@ -29,6 +38,9 @@ export type {
   ClilyChildSimple,
   ClilyHooks,
   ClilyOptions,
+  CompletionConfig,
+  CompletionShell,
+  ExecutionEnvironment,
   InferOutput,
   JsonSchema,
   JsonSchemaProperty,
@@ -44,8 +56,16 @@ export {
   validateSchema,
 } from './schema.ts'
 export { generateChildHelp, generateHelp } from './help.ts'
-export { resolveEnvVars, toEnvPrefix } from './env.ts'
+export { resolveEnvVars, toEnvPrefix, getExecutionEnvironment, inferShell } from './env.ts'
 export { camelToKebab, kebabToCamel, normalizeArgs } from './args.ts'
+export {
+  buildCompletionTree,
+  extractCompletionShellArg,
+  generateCompletionScript,
+  getCompletionCommandNames,
+  normalizeCompletionConfig,
+  resolveCompletionShell,
+} from './completion.ts'
 
 // ─── Internal Helpers ────────────────────────────────────
 
@@ -282,6 +302,12 @@ export function clily<
   TArgs extends StandardSchemaV1 | undefined = undefined,
   const TChildren extends Record<string, { args?: StandardSchemaV1 }> = Record<never, never>,
 >(config: ClilyOptions<TFlags, TArgs, TChildren>): () => Promise<void> {
+  const environment = getExecutionEnvironment()
+  const debug = config.debug ?? environment.isDebug
+  const completionConfig = normalizeCompletionConfig(config.completion)
+  const completionCommandNames = getCompletionCommandNames(config.completion).filter(
+    (name) => !(config.children && name in config.children),
+  )
   const flagSchema = config.flags ? toJsonSchema(config.flags as StandardSchemaV1) : null
   const argSchema = config.args ? toJsonSchema(config.args as StandardSchemaV1) : null
 
@@ -317,12 +343,23 @@ export function clily<
               flagSchema,
               config.flags as StandardSchemaV1 | undefined,
               config.hooks,
-              config.debug ?? false,
+              debug,
             ),
           ],
         ),
       )
     : undefined
+
+  const helpChildren: Record<string, { description?: string }> = {
+    ...(config.children as Record<string, { description?: string }> | undefined),
+  }
+  if (completionConfig) {
+    for (const name of completionCommandNames) {
+      helpChildren[name] = {
+        description: 'Generate shell completion for bash, zsh, fish, or pwsh',
+      }
+    }
+  }
 
   const rootCommand = defineCommand({
     meta: {
@@ -338,7 +375,10 @@ export function clily<
       }
 
       if ((parsedArgs as Record<string, unknown>)['help'] || !config.handler) {
-        const helpText = generateHelp(config as Parameters<typeof generateHelp>[0])
+        const helpText = generateHelp({
+          ...config,
+          children: helpChildren,
+        } as Parameters<typeof generateHelp>[0])
         const mutated = config.hooks?.onHelp ? await config.hooks.onHelp(helpText) : undefined
         console.log(typeof mutated === 'string' ? mutated : helpText)
         return
@@ -351,7 +391,7 @@ export function clily<
         mergedJsonSchema,
         schemaDefaults,
         config.hooks,
-        config.debug ?? false,
+        debug,
         config.handler as ((args: Record<string, unknown>) => void | Promise<void>) | undefined,
       )
     },
@@ -359,6 +399,26 @@ export function clily<
 
   return async () => {
     try {
+      if (completionConfig && isCompletionCommand(process.argv.slice(2), completionCommandNames)) {
+        const shell = resolveCompletionShell(
+          extractCompletionShellArg(process.argv.slice(2), completionCommandNames),
+          completionConfig,
+          environment,
+        )
+        const script = generateCompletionScript(
+          config.name,
+          buildCompletionTree({
+            flags: config.flags,
+            args: config.args,
+            children: config.children as Record<string, ClilyChildSimple> | undefined,
+            completion: config.completion,
+          }),
+          shell,
+        )
+        console.log(script)
+        return
+      }
+
       await runMain(rootCommand)
     } catch (err) {
       if (config.hooks?.onError) {

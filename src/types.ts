@@ -47,6 +47,27 @@ export interface ClilyHooks {
   onHelp?: (helpText: string) => string | void | Promise<string | void>
 }
 
+export type CompletionShell = 'bash' | 'zsh' | 'fish' | 'pwsh'
+
+export interface CompletionConfig {
+  command?: string
+  aliases?: string[]
+  shell?: CompletionShell | 'auto'
+  shells?: CompletionShell[]
+}
+
+export interface ExecutionEnvironment {
+  shell: CompletionShell | null
+  runtime: string
+  isNode: boolean
+  isBun: boolean
+  isDeno: boolean
+  hasTTY: boolean
+  isCI: boolean
+  isDebug: boolean
+  isColorSupported: boolean
+}
+
 // ─── Child Command Config ────────────────────────────────
 
 /** Simplified child config for deeply nested subcommands. */
@@ -97,6 +118,7 @@ export interface ClilyOptions<
   args?: TArgs
   positionals?: StandardSchemaV1
   plugins?: unknown[]
+  completion?: boolean | CompletionConfig
   hooks?: ClilyHooks
   handler?: (args: MergedOutput<TFlags, TArgs>) => void | Promise<void>
   children?: TypedChildren<TFlags, TChildren>

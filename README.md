@@ -9,8 +9,9 @@ A modern, highly ergonomic TypeScript CLI framework for Node/Bun. clily acts as 
 - **📦 Config resolution** — Merges CLI args > env vars > config files > schema defaults via [c12](https://github.com/unjs/c12)
 - **💬 Interactive fallback** — Prompts for missing required fields in TTY via [@clack/prompts](https://github.com/bombshell-dev/clack)
 - **🌳 Subcommand tree** — Nested commands with inherited global flags and per-child type inference
+- **⌨️ Shell completions** — Generate Bash, Zsh, Fish, and PowerShell completion scripts
 - **🎨 Beautiful output** — Powered by [consola](https://github.com/unjs/consola) and [picocolors](https://github.com/alexeyraspopov/picocolors)
-- **🤖 CI-aware** — Detects CI/TTY and skips interactive prompts via [std-env](https://github.com/unjs/std-env)
+- **🤖 Runtime-aware** — Uses [std-env](https://github.com/unjs/std-env) to react to CI/TTY/debug/color/runtime conditions
 - **📐 JSON Schema internal format** — Extensible internal representation for future nested args support
 
 ## Install
@@ -28,6 +29,7 @@ import * as v from 'valibot'
 const cli = clily({
   name: 'mycli',
   version: '1.2.0',
+  completion: true,
   // Global flags — inherited by all subcommands
   flags: v.object({
     verbose: v.optional(v.boolean(), false),
@@ -60,6 +62,37 @@ const cli = clily({
 await cli()
 ```
 
+### Shell Completion
+
+When `completion: true` is enabled, clily automatically reserves:
+
+- `mycli completion`
+- `mycli completions`
+- `mycli completion <shell>`
+
+Shell defaults are inferred from `std-env` / process environment (`$SHELL`, PowerShell env markers, etc.), with Bash as a fallback.
+
+```ts
+const cli = clily({
+  name: 'mycli',
+  completion: {
+    command: 'completion',
+    aliases: ['completions'],
+    shell: 'auto',
+    shells: ['bash', 'zsh', 'fish', 'pwsh'],
+  },
+  handler: async () => {},
+})
+```
+
+Examples:
+
+```bash
+mycli completion         # infer current shell
+mycli completion zsh     # force a shell
+mycli completions fish   # alias
+```
+
 ### Works with Any Standard Schema Library
 
 ```ts
@@ -78,6 +111,22 @@ const cli = clily({
     },
   },
 })
+```
+
+### Runtime & Shell Metadata
+
+clily exports `getExecutionEnvironment()` so you can inspect the same `std-env` data used internally for prompt, debug, completion, and runtime defaults:
+
+```ts
+import { getExecutionEnvironment } from 'clily'
+
+const env = getExecutionEnvironment()
+// {
+//   shell: 'bash' | 'zsh' | 'fish' | 'pwsh' | null,
+//   runtime: 'node' | 'bun' | 'deno' | ...,
+//   isNode, isBun, isDeno,
+//   hasTTY, isCI, isDebug, isColorSupported
+// }
 ```
 
 ## Configuration Resolution
