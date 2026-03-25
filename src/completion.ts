@@ -4,17 +4,23 @@ import omelette from 'omelette'
 import { camelToKebab } from './args.ts'
 import { toJsonSchema } from './schema.ts'
 import type {
-  ClilyChildSimple,
   CompletionConfig,
   CompletionShell,
   ExecutionEnvironment,
   JsonSchema,
 } from './types.ts'
 
+type CommandLikeChild = {
+  description?: string
+  args?: StandardSchemaV1
+  children?: Record<string, unknown>
+  handler?: (...args: unknown[]) => unknown
+}
+
 type CommandLike = {
   description?: string
-  args?: { '~standard': unknown }
-  children?: Record<string, ClilyChildSimple>
+  args?: StandardSchemaV1
+  children?: Record<string, CommandLikeChild>
 }
 
 export interface CompletionTree {
@@ -48,18 +54,19 @@ function buildCompletionNode(
   const node: CompletionTree = {
     '--help': [],
     ...getOptionSuggestions(inheritedFlags),
-    ...(config.args
-      ? getOptionSuggestions(
-          toJsonSchema(config.args as import('@standard-schema/spec').StandardSchemaV1),
-        )
-      : {}),
+    ...(config.args ? getOptionSuggestions(toJsonSchema(config.args)) : {}),
   }
 
   for (const [name, child] of Object.entries(config.children ?? {})) {
     if (RESERVED_COMPLETION_KEYS.has(name)) {
       continue
     }
-    node[name] = buildCompletionNode(child, inheritedFlags, completionCommands, completionShells)
+    node[name] = buildCompletionNode(
+      child as CommandLike,
+      inheritedFlags,
+      completionCommands,
+      completionShells,
+    )
   }
 
   if (completionCommands.length > 0) {
@@ -106,13 +113,11 @@ export function getCompletionCommandNames(
 export function buildCompletionTree(config: {
   flags?: StandardSchemaV1
   args?: StandardSchemaV1
-  children?: Record<string, ClilyChildSimple>
+  children?: Record<string, CommandLikeChild>
   completion?: boolean | CompletionConfig
 }): CompletionTree {
   const completion = normalizeCompletionConfig(config.completion)
-  const flagSchema = config.flags
-    ? toJsonSchema(config.flags as import('@standard-schema/spec').StandardSchemaV1)
-    : null
+  const flagSchema = config.flags ? toJsonSchema(config.flags) : null
 
   return buildCompletionNode(
     config as CommandLike,

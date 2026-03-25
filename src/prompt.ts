@@ -6,7 +6,22 @@
  */
 import * as p from '@clack/prompts'
 
+import { ClilyCommandError } from './errors.ts'
 import type { JsonSchema } from './types.ts'
+
+function getPromptPlaceholder(key: string, schema: JsonSchema): string | undefined {
+  const prop = schema.properties[key]
+  if (!prop) {
+    return undefined
+  }
+  if (prop.default !== undefined) {
+    return `Default: ${JSON.stringify(prop.default)}`
+  }
+  if (prop.enum && prop.enum.length > 0) {
+    return `One of: ${prop.enum.map((value) => String(value)).join(', ')}`
+  }
+  return undefined
+}
 
 /**
  * Prompt the user for missing required fields using @clack/prompts.
@@ -28,17 +43,27 @@ export async function promptForMissing(
       const value = await p.confirm({ message: label })
       if (p.isCancel(value)) {
         p.cancel('Operation cancelled.')
-        process.exit(0)
+        throw new ClilyCommandError({
+          code: 0,
+          reason: 'cancelled',
+          message: 'Operation cancelled.',
+          silent: true,
+        })
       }
       result[key] = value
     } else {
       const value = await p.text({
         message: label,
-        placeholder: prop?.description,
+        placeholder: getPromptPlaceholder(key, schema),
       })
       if (p.isCancel(value)) {
         p.cancel('Operation cancelled.')
-        process.exit(0)
+        throw new ClilyCommandError({
+          code: 0,
+          reason: 'cancelled',
+          message: 'Operation cancelled.',
+          silent: true,
+        })
       }
       result[key] = value
     }

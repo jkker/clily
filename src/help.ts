@@ -1,13 +1,19 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 /**
  * Help text generation for clily.
  *
  * Auto-generates help menus from JSON Schema metadata and command tree.
  */
-import pc from 'picocolors'
+import { colors } from 'consola/utils'
 
 import { camelToKebab } from './args.ts'
 import { toJsonSchema } from './schema.ts'
-import type { ClilyChildSimple, JsonSchema, JsonSchemaProperty } from './types.ts'
+import type { JsonSchema, JsonSchemaProperty } from './types.ts'
+
+type HelpChildConfig = {
+  description?: string
+  args?: StandardSchemaV1
+}
 
 /**
  * Format a single flag entry for help display.
@@ -15,12 +21,12 @@ import type { ClilyChildSimple, JsonSchema, JsonSchemaProperty } from './types.t
 function formatFlag(key: string, prop: JsonSchemaProperty, isRequired: boolean): string {
   const flag = `--${camelToKebab(key)}`
   const typeStr = prop.type ? `<${prop.type}>` : ''
-  const reqStr = isRequired ? pc.red('(required)') : ''
+  const reqStr = isRequired ? colors.red('(required)') : ''
   const defStr =
-    prop.default !== undefined ? pc.dim(`(default: ${JSON.stringify(prop.default)})`) : ''
+    prop.default !== undefined ? colors.dim(`(default: ${JSON.stringify(prop.default)})`) : ''
   const descStr = prop.description ?? ''
 
-  return `  ${pc.green(flag)} ${typeStr} ${descStr} ${reqStr} ${defStr}`.trimEnd()
+  return `  ${colors.green(flag)} ${typeStr} ${descStr} ${reqStr} ${defStr}`.trimEnd()
 }
 
 /**
@@ -31,9 +37,9 @@ export function generateHelp(
     name?: string
     version?: string
     description?: string
-    flags?: { '~standard': unknown }
-    args?: { '~standard': unknown }
-    children?: Record<string, { description?: string }>
+    flags?: StandardSchemaV1
+    args?: StandardSchemaV1
+    children?: Record<string, HelpChildConfig>
   },
   commandPath: string[] = [],
 ): string {
@@ -43,9 +49,9 @@ export function generateHelp(
 
   // Header
   if (config.version) {
-    lines.push(`${pc.bold(name)} ${pc.dim(`v${config.version}`)}`)
+    lines.push(`${colors.bold(name)} ${colors.dim(`v${config.version}`)}`)
   } else {
-    lines.push(pc.bold(name))
+    lines.push(colors.bold(name))
   }
 
   if (config.description) {
@@ -54,7 +60,7 @@ export function generateHelp(
   lines.push('')
 
   // Usage
-  lines.push(pc.bold('USAGE:'))
+  lines.push(colors.bold('USAGE:'))
   const hasChildren = config.children && Object.keys(config.children).length > 0
   if (hasChildren) {
     lines.push(`  ${fullCommand} <command> [options]`)
@@ -65,11 +71,9 @@ export function generateHelp(
 
   // Global flags
   if (config.flags) {
-    const flagSchema = toJsonSchema(
-      config.flags as import('@standard-schema/spec').StandardSchemaV1,
-    )
+    const flagSchema = toJsonSchema(config.flags)
     if (Object.keys(flagSchema.properties).length > 0) {
-      lines.push(pc.bold('GLOBAL FLAGS:'))
+      lines.push(colors.bold('GLOBAL FLAGS:'))
       for (const [key, prop] of Object.entries(flagSchema.properties)) {
         lines.push(formatFlag(key, prop, flagSchema.required.includes(key)))
       }
@@ -79,9 +83,9 @@ export function generateHelp(
 
   // Args (command-specific flags)
   if (config.args) {
-    const argSchema = toJsonSchema(config.args as import('@standard-schema/spec').StandardSchemaV1)
+    const argSchema = toJsonSchema(config.args)
     if (Object.keys(argSchema.properties).length > 0) {
-      lines.push(pc.bold('OPTIONS:'))
+      lines.push(colors.bold('OPTIONS:'))
       for (const [key, prop] of Object.entries(argSchema.properties)) {
         lines.push(formatFlag(key, prop, argSchema.required.includes(key)))
       }
@@ -91,18 +95,18 @@ export function generateHelp(
 
   // Subcommands
   if (hasChildren) {
-    lines.push(pc.bold('COMMANDS:'))
+    lines.push(colors.bold('COMMANDS:'))
     for (const [cmdName, cmdConfig] of Object.entries(
-      config.children as Record<string, ClilyChildSimple>,
+      config.children as Record<string, HelpChildConfig>,
     )) {
       const desc = cmdConfig.description ?? ''
-      lines.push(`  ${pc.green(cmdName)}  ${desc}`)
+      lines.push(`  ${colors.green(cmdName)}  ${desc}`)
     }
     lines.push('')
   }
 
   // Footer
-  lines.push(pc.dim(`  Use "${fullCommand} <command> --help" for more information.`))
+  lines.push(colors.dim(`  Use "${fullCommand} <command> --help" for more information.`))
 
   return lines.join('\n')
 }
@@ -111,7 +115,7 @@ export function generateHelp(
  * Generate help text for a child command, extracting schema from JSON Schema.
  */
 export function generateChildHelp(
-  childConfig: ClilyChildSimple,
+  childConfig: HelpChildConfig,
   parentFlagsSchema: JsonSchema | null,
   commandPath: string[],
 ): string {
@@ -119,19 +123,19 @@ export function generateChildHelp(
   const name = commandPath.at(-1) ?? ''
   const fullCommand = commandPath.join(' ')
 
-  lines.push(pc.bold(name))
+  lines.push(colors.bold(name))
   if (childConfig.description) {
     lines.push(`  ${childConfig.description}`)
   }
   lines.push('')
 
-  lines.push(pc.bold('USAGE:'))
+  lines.push(colors.bold('USAGE:'))
   lines.push(`  ${fullCommand} [options]`)
   lines.push('')
 
   // Parent flags
   if (parentFlagsSchema && Object.keys(parentFlagsSchema.properties).length > 0) {
-    lines.push(pc.bold('GLOBAL FLAGS:'))
+    lines.push(colors.bold('GLOBAL FLAGS:'))
     for (const [key, prop] of Object.entries(parentFlagsSchema.properties)) {
       lines.push(formatFlag(key, prop, parentFlagsSchema.required.includes(key)))
     }
@@ -140,11 +144,9 @@ export function generateChildHelp(
 
   // Child args
   if (childConfig.args) {
-    const argSchema = toJsonSchema(
-      childConfig.args as import('@standard-schema/spec').StandardSchemaV1,
-    )
+    const argSchema = toJsonSchema(childConfig.args)
     if (Object.keys(argSchema.properties).length > 0) {
-      lines.push(pc.bold('OPTIONS:'))
+      lines.push(colors.bold('OPTIONS:'))
       for (const [key, prop] of Object.entries(argSchema.properties)) {
         lines.push(formatFlag(key, prop, argSchema.required.includes(key)))
       }
@@ -152,7 +154,7 @@ export function generateChildHelp(
     }
   }
 
-  lines.push(pc.dim(`  Use "${fullCommand} --help" for more information.`))
+  lines.push(colors.dim(`  Use "${fullCommand} --help" for more information.`))
 
   return lines.join('\n')
 }

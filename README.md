@@ -10,8 +10,9 @@ A modern, highly ergonomic TypeScript CLI framework for Node/Bun. clily acts as 
 - **💬 Interactive fallback** — Prompts for missing required fields in TTY via [@clack/prompts](https://github.com/bombshell-dev/clack)
 - **🌳 Subcommand tree** — Nested commands with inherited global flags and per-child type inference
 - **⌨️ Shell completions** — Generate Bash, Zsh, Fish, and PowerShell completion scripts
-- **🎨 Beautiful output** — Powered by [consola](https://github.com/unjs/consola) and [picocolors](https://github.com/alexeyraspopov/picocolors)
+- **🎨 Beautiful output** — Powered by [consola](https://github.com/unjs/consola) and its built-in formatting utilities
 - **🤖 Runtime-aware** — Uses [std-env](https://github.com/unjs/std-env) to react to CI/TTY/debug/color/runtime conditions
+- **🧩 Injectable runtime boundary** — Override argv, env, cwd, stdout, debug/error logging, and exit handling for tests or embedding
 - **📐 JSON Schema internal format** — Extensible internal representation for future nested args support
 
 ## Install
@@ -129,6 +130,67 @@ const env = getExecutionEnvironment()
 // }
 ```
 
+### Runtime Injection
+
+clily keeps direct process access behind an injectable runtime boundary. This is the preferred way to embed clily inside tests, worker processes, Bun scripts, or Deno adapters without relying on global `process.exit()` or `process.argv`.
+
+```ts
+import { clily } from 'clily'
+import * as v from 'valibot'
+
+const exits: number[] = []
+const writes: string[] = []
+
+const cli = clily({
+  name: 'embedded',
+  flags: v.object({ verbose: v.optional(v.boolean(), false) }),
+  runtime: {
+    argv: ['embedded', '--help'],
+    env: { EMBEDDED_VERBOSE: 'true' },
+    cwd: () => '/workspace',
+    stdout: (message) => {
+      writes.push(message)
+    },
+    exit: ({ code }) => {
+      exits.push(code)
+    },
+  },
+  hooks: {
+    onExit: ({ code, reason }) => {
+      console.log(`exit requested: ${code} (${reason})`)
+    },
+  },
+  handler: async () => {},
+})
+
+await cli()
+```
+
+Non-zero failures still surface through `hooks.onError`. If `onError` is present, clily does not take the default exit path for that failure.
+
+### External Integration Boundary
+
+clily intentionally keeps external API usage narrow and explicit:
+
+| Module              | External API                                                                               | Purpose                                          |
+| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `src/runtime.ts`    | `process.argv`, `process.env`, `process.cwd()`, `process.exit()`, `console.log`, `consola` | Default command runtime and I/O boundary         |
+| `src/config.ts`     | `c12.loadConfig()`                                                                         | Local/global config resolution                   |
+| `src/prompt.ts`     | `@clack/prompts`                                                                           | Interactive fallback for missing required values |
+| `src/completion.ts` | `omelette`                                                                                 | Bash/Zsh/Fish completion generation              |
+| `src/env.ts`        | `std-env`                                                                                  | Runtime, CI, TTY, and shell inference            |
+
+Everything else is written to stay pure or to depend on injected runtime capabilities.
+
+## Examples
+
+See [examples/README.md](examples/README.md) for complete examples covering:
+
+- Valibot, Zod, and ArkType
+- zsh, bash, fish, and pwsh completions
+- Node-style, Bun-style, and Deno-style runtime flows
+- injected exit and output handling for embedding and tests
+
 ## Configuration Resolution
 
 Parameters are merged in this priority order (highest to lowest):
@@ -145,6 +207,7 @@ Parameters are merged in this priority order (highest to lowest):
 vp install
 vp test              # Run runtime tests
 vp test --typecheck  # Run runtime + type-level tests
+vp test --coverage   # Coverage (currently warns about a Vite+/coverage version mismatch)
 vp check             # Lint, format, and type check
 vp pack              # Build library
 ```

@@ -10,6 +10,7 @@ import * as v from 'valibot'
 import { describe, expectTypeOf, test } from 'vite-plus/test'
 import { object, string, number, boolean } from 'zod'
 
+import { clily } from '../src/index.ts'
 import type { InferOutput, MergedOutput } from '../src/types.ts'
 
 // ─── InferOutput ─────────────────────────────────────────
@@ -135,5 +136,84 @@ describe('Root handler type inference', () => {
       verbose: boolean
       target: string
     }>()
+  })
+
+  test('child handlers receive merged parent flags and child args', () => {
+    const flags = v.object({
+      verbose: v.optional(v.boolean(), false),
+      profile: v.optional(v.picklist(['dev', 'prod']), 'dev'),
+    })
+    const deployArgs = object({
+      apiKey: string(),
+      replicas: number().default(1),
+    })
+
+    clily<
+      typeof flags,
+      undefined,
+      {
+        deploy: { args: typeof deployArgs }
+      }
+    >({
+      name: 'typed-cli',
+      flags,
+      children: {
+        deploy: {
+          args: deployArgs,
+          handler: (args) => {
+            expectTypeOf(args).toMatchTypeOf<{
+              verbose: boolean
+              profile: 'dev' | 'prod'
+              apiKey: string
+              replicas: number
+            }>()
+          },
+        },
+      },
+    })
+  })
+
+  test('nested child handlers preserve their own arg types', () => {
+    const flags = object({
+      verbose: boolean().default(false),
+    })
+    const parentArgs = v.object({
+      target: v.string(),
+    })
+    const nestedArgs = object({
+      revision: string(),
+    })
+
+    clily<
+      typeof flags,
+      undefined,
+      {
+        deploy: {
+          args: typeof parentArgs
+          children: {
+            rollout: { args: typeof nestedArgs }
+          }
+        }
+      }
+    >({
+      name: 'typed-cli',
+      flags,
+      children: {
+        deploy: {
+          args: parentArgs,
+          children: {
+            rollout: {
+              args: nestedArgs,
+              handler: (args) => {
+                expectTypeOf(args).toMatchTypeOf<{
+                  verbose: boolean
+                  revision: string
+                }>()
+              },
+            },
+          },
+        },
+      },
+    })
   })
 })

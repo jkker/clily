@@ -6,8 +6,7 @@
  */
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { ArgsDef, CommandDef, SubCommandsDef } from 'citty'
-import { defineCommand, runMain } from 'citty'
-import consola from 'consola'
+import { defineCommand, runCommand } from 'citty'
 import { defu } from 'defu'
 import { hasTTY, isCI } from 'std-env'
 
@@ -23,8 +22,10 @@ import {
 } from './completion.ts'
 import { loadClilyConfig } from './config.ts'
 import { getExecutionEnvironment, resolveEnvVars } from './env.ts'
+import { ClilyCommandError, toError } from './errors.ts'
 import { generateChildHelp, generateHelp } from './help.ts'
 import { promptForMissing } from './prompt.ts'
+import { createRuntime } from './runtime.ts'
 import {
   coerceTypes,
   getDefaults,
@@ -32,12 +33,20 @@ import {
   toJsonSchema,
   validateSchema,
 } from './schema.ts'
-import type { ClilyChildSimple, ClilyHooks, ClilyOptions, JsonSchema } from './types.ts'
-
-export type {
+import type {
   ClilyChildSimple,
   ClilyHooks,
   ClilyOptions,
+  ClilyRuntime,
+  JsonSchema,
+} from './types.ts'
+
+export type {
+  ClilyChildSimple,
+  ClilyExitRequest,
+  ClilyHooks,
+  ClilyOptions,
+  ClilyRuntime,
   CompletionConfig,
   CompletionShell,
   ExecutionEnvironment,
@@ -55,9 +64,11 @@ export {
   toJsonSchema,
   validateSchema,
 } from './schema.ts'
+export { ClilyCommandError } from './errors.ts'
 export { generateChildHelp, generateHelp } from './help.ts'
 export { resolveEnvVars, toEnvPrefix, getExecutionEnvironment, inferShell } from './env.ts'
 export { camelToKebab, kebabToCamel, normalizeArgs } from './args.ts'
+export { createRuntime } from './runtime.ts'
 export {
   buildCompletionTree,
   extractCompletionShellArg,
@@ -68,6 +79,14 @@ export {
 } from './completion.ts'
 
 // ─── Internal Helpers ────────────────────────────────────
+
+interface PreparedCommandSchemas {
+  argSchema: JsonSchema | null
+  cittyArgs: ArgsDef
+  mergedJsonSchema: JsonSchema
+  schemaDefaults: Record<string, unknown>
+  schemas: StandardSchemaV1[]
+}
 
 /** Build citty ArgsDef from flags + args JSON Schemas. */
 function buildArgsDef(flagSchema: JsonSchema | null, argSchema: JsonSchema | null): ArgsDef {
@@ -87,15 +106,131 @@ function mergeConfigLayers(
   return defu(cliArgs, envVars, fileConfig, schemaDefaults)
 }
 
-/** Format and log validation issues. */
-function logValidationIssues(issues: readonly StandardSchemaV1.Issue[]): void {
-  for (const issue of issues) {
-    const path =
-      issue.path
-        ?.map((seg) => (typeof seg === 'object' ? String(seg.key) : String(seg)))
-        .join('.') ?? ''
-    consola.error(`Validation error${path ? ` at "${path}"` : ''}: ${issue.message}`)
+function prepareCommandSchemas(
+  flagSchema: JsonSchema | null,
+  flagSchemaSource: StandardSchemaV1 | undefined,
+  argSchemaSource: StandardSchemaV1 | undefined,
+): PreparedCommandSchemas {
+  const argSchema = argSchemaSource ? toJsonSchema(argSchemaSource) : null
+
+  return {
+    argSchema,
+    cittyArgs: buildArgsDef(flagSchema, argSchema),
+    mergedJsonSchema: {
+      type: 'object',
+      properties: {
+        ...flagSchema?.properties,
+        ...argSchema?.properties,
+      },
+      required: [...(flagSchema?.required ?? []), ...(argSchema?.required ?? [])],
+    },
+    schemaDefaults: {
+      ...(flagSchema ? getDefaults(flagSchema) : {}),
+      ...(argSchema ? getDefaults(argSchema) : {}),
+    },
+    schemas: [flagSchemaSource, argSchemaSource].filter(
+      (schema): schema is StandardSchemaV1 => schema !== undefined,
+    ),
   }
+}
+
+function assertNoPositionalsSupport(
+  commandName: string,
+  config: { positionals?: unknown; children?: Record<string, unknown> },
+  commandPath: string[] = [commandName],
+): void {
+  if (config.positionals) {
+    throw new Error(
+      `Positionals are not supported yet for command "${commandPath.join(' ')}". Remove the positionals schema until positional parsing is implemented.`,
+    )
+  }
+
+  for (const [childName, childConfig] of Object.entries(config.children ?? {})) {
+    if (typeof childConfig !== 'object' || childConfig === null) {
+      continue
+    }
+
+    assertNoPositionalsSupport(commandName, childConfig as Record<string, unknown>, [
+      ...commandPath,
+      childName,
+    ])
+  }
+}
+
+function formatValidationIssue(issue: StandardSchemaV1.Issue): string {
+  const path =
+    issue.path?.map((seg) => (typeof seg === 'object' ? String(seg.key) : String(seg))).join('.') ??
+    ''
+
+  return `Validation error${path ? ` at "${path}"` : ''}: ${issue.message}`
+}
+
+async function emitCommandError(runtime: ClilyRuntime, error: Error): Promise<void> {
+  if (error instanceof ClilyCommandError && error.issues) {
+    for (const issue of error.issues) {
+      await runtime.error(formatValidationIssue(issue))
+    }
+    return
+  }
+
+  await runtime.error(error)
+}
+
+async function handleCommandExit(
+  error: Error,
+  hooks: ClilyHooks | undefined,
+  runtime: ClilyRuntime,
+): Promise<void> {
+  const request =
+    error instanceof ClilyCommandError
+      ? {
+          code: error.code,
+          error,
+          reason: error.reason,
+        }
+      : {
+          code: 1,
+          error,
+          reason: 'runtime-error' as const,
+        }
+
+  if (hooks?.onExit) {
+    await hooks.onExit(request)
+  }
+
+  if (request.code > 0 && hooks?.onError) {
+    await hooks.onError(error)
+    return
+  }
+
+  if (!(error instanceof ClilyCommandError && error.silent)) {
+    await emitCommandError(runtime, error)
+  }
+
+  await runtime.exit(request)
+}
+
+function resolveHelpTarget(
+  rawArgs: readonly string[],
+  rootName: string,
+  children: Record<string, ClilyChildSimple> | undefined,
+): { childConfig?: ClilyChildSimple; commandPath: string[] } {
+  const commandPath = [rootName]
+  let currentChildren = children
+  let currentChild: ClilyChildSimple | undefined
+
+  for (const token of rawArgs.filter((arg) => !arg.startsWith('-'))) {
+    const nextChild = currentChildren?.[token]
+    if (!nextChild) {
+      break
+    }
+
+    currentChild = nextChild
+    commandPath.push(token)
+    currentChildren = nextChild.children
+  }
+
+  return { childConfig: currentChild, commandPath }
 }
 
 /** Handle validation failure: prompt in TTY, error in CI. */
@@ -118,10 +253,8 @@ async function handleValidationFailure(
       const prompted = await promptForMissing(missingKeys, mergedSchema)
       return { ...mergedConfig, ...prompted }
     }
-    logValidationIssues(issues)
     return null
   } else {
-    logValidationIssues(issues)
     return null
   }
 }
@@ -134,17 +267,13 @@ async function resolveAndRun(
   mergedJsonSchema: JsonSchema,
   schemaDefaults: Record<string, unknown>,
   hooks: ClilyHooks | undefined,
+  runtime: ClilyRuntime,
   debug: boolean,
   handler?: (args: Record<string, unknown>) => void | Promise<void>,
 ): Promise<void> {
   const cliArgs = normalizeArgs(parsedArgs)
-  const envVars = resolveEnvVars(name)
-  let fileConfig: Record<string, unknown> = {}
-  try {
-    fileConfig = await loadClilyConfig({ name })
-  } catch {
-    // Config file loading is optional
-  }
+  const envVars = resolveEnvVars(name, runtime.env)
+  const fileConfig = await loadClilyConfig({ name, cwd: runtime.cwd() })
 
   let mergedConfig = mergeConfigLayers(cliArgs, envVars, fileConfig, schemaDefaults)
   mergedConfig = coerceTypes(mergedConfig, mergedJsonSchema)
@@ -164,21 +293,30 @@ async function resolveAndRun(
         hooks,
       )
       if (!fixed) {
-        process.exit(1)
+        throw new ClilyCommandError({
+          code: 1,
+          reason: 'validation',
+          message: 'Validation failed.',
+          issues: result.issues,
+        })
       }
       mergedConfig = coerceTypes(fixed, mergedJsonSchema)
 
       // Re-validate
       const reResult = await validateSchema(schema, mergedConfig)
       if (!reResult.success) {
-        logValidationIssues(reResult.issues)
-        process.exit(1)
+        throw new ClilyCommandError({
+          code: 1,
+          reason: 'validation',
+          message: 'Validation failed after prompting for missing values.',
+          issues: reResult.issues,
+        })
       }
     }
   }
 
   if (debug) {
-    consola.debug('Resolved config:', mergedConfig)
+    await runtime.debug('Resolved config:', mergedConfig)
   }
 
   if (handler) {
@@ -195,43 +333,33 @@ function buildSubCommand(
   rootFlagsSchema: JsonSchema | null,
   rootFlags: StandardSchemaV1 | undefined,
   rootHooks: ClilyHooks | undefined,
+  runtime: ClilyRuntime,
   debug: boolean,
 ): CommandDef {
-  const argSchema = childConfig.args ? toJsonSchema(childConfig.args) : null
-  const cittyArgs = buildArgsDef(rootFlagsSchema, argSchema)
-
-  const flagDefaults = rootFlagsSchema ? getDefaults(rootFlagsSchema) : {}
-  const argDefaults = argSchema ? getDefaults(argSchema) : {}
-  const schemaDefaults = { ...flagDefaults, ...argDefaults }
-
-  const mergedJsonSchema: JsonSchema = {
-    type: 'object',
-    properties: {
-      ...rootFlagsSchema?.properties,
-      ...argSchema?.properties,
-    },
-    required: [...(rootFlagsSchema?.required ?? []), ...(argSchema?.required ?? [])],
-  }
-
-  const schemas: StandardSchemaV1[] = []
-  if (rootFlags) schemas.push(rootFlags)
-  if (childConfig.args) schemas.push(childConfig.args)
+  const { cittyArgs, mergedJsonSchema, schemaDefaults, schemas } = prepareCommandSchemas(
+    rootFlagsSchema,
+    rootFlags,
+    childConfig.args,
+  )
 
   // Build nested subcommands
   const subCommands: SubCommandsDef | undefined = childConfig.children
     ? Object.fromEntries(
-        Object.entries(childConfig.children).map(([subName, subConfig]) => [
-          subName,
-          buildSubCommand(
+        Object.entries(childConfig.children as Record<string, ClilyChildSimple>).map(
+          ([subName, subConfig]) => [
             subName,
-            subConfig,
-            rootName,
-            rootFlagsSchema,
-            rootFlags,
-            rootHooks,
-            debug,
-          ),
-        ]),
+            buildSubCommand(
+              subName,
+              subConfig,
+              rootName,
+              rootFlagsSchema,
+              rootFlags,
+              rootHooks,
+              runtime,
+              debug,
+            ),
+          ],
+        ),
       )
     : undefined
 
@@ -247,7 +375,7 @@ function buildSubCommand(
           : rootHooks?.onHelp
             ? await rootHooks.onHelp(helpText)
             : undefined
-        console.log(typeof mutated === 'string' ? mutated : helpText)
+        await runtime.stdout(typeof mutated === 'string' ? mutated : helpText)
         return
       }
 
@@ -258,6 +386,7 @@ function buildSubCommand(
         mergedJsonSchema,
         schemaDefaults,
         childConfig.hooks ?? rootHooks,
+        runtime,
         debug,
         childConfig.handler as
           | ((args: Record<string, unknown>) => void | Promise<void>)
@@ -302,33 +431,21 @@ export function clily<
   TArgs extends StandardSchemaV1 | undefined = undefined,
   const TChildren extends Record<string, { args?: StandardSchemaV1 }> = Record<never, never>,
 >(config: ClilyOptions<TFlags, TArgs, TChildren>): () => Promise<void> {
-  const environment = getExecutionEnvironment()
+  assertNoPositionalsSupport(config.name, config)
+
+  const runtime = createRuntime(config.runtime)
+  const environment = getExecutionEnvironment(runtime.env)
   const debug = config.debug ?? environment.isDebug
   const completionConfig = normalizeCompletionConfig(config.completion)
   const completionCommandNames = getCompletionCommandNames(config.completion).filter(
     (name) => !(config.children && name in config.children),
   )
-  const flagSchema = config.flags ? toJsonSchema(config.flags as StandardSchemaV1) : null
-  const argSchema = config.args ? toJsonSchema(config.args as StandardSchemaV1) : null
-
-  const cittyArgs = buildArgsDef(flagSchema, argSchema)
-
-  const flagDefaults = flagSchema ? getDefaults(flagSchema) : {}
-  const argDefaults = argSchema ? getDefaults(argSchema) : {}
-  const schemaDefaults = { ...flagDefaults, ...argDefaults }
-
-  const mergedJsonSchema: JsonSchema = {
-    type: 'object',
-    properties: {
-      ...flagSchema?.properties,
-      ...argSchema?.properties,
-    },
-    required: [...(flagSchema?.required ?? []), ...(argSchema?.required ?? [])],
-  }
-
-  const schemas: StandardSchemaV1[] = []
-  if (config.flags) schemas.push(config.flags as StandardSchemaV1)
-  if (config.args) schemas.push(config.args as StandardSchemaV1)
+  const flagSchema = config.flags ? toJsonSchema(config.flags) : null
+  const { cittyArgs, mergedJsonSchema, schemaDefaults, schemas } = prepareCommandSchemas(
+    flagSchema,
+    config.flags,
+    config.args,
+  )
 
   // Build subcommands from children
   const subCommands: SubCommandsDef | undefined = config.children
@@ -341,8 +458,9 @@ export function clily<
               childConfig,
               config.name,
               flagSchema,
-              config.flags as StandardSchemaV1 | undefined,
+              config.flags,
               config.hooks,
+              runtime,
               debug,
             ),
           ],
@@ -380,7 +498,7 @@ export function clily<
           children: helpChildren,
         } as Parameters<typeof generateHelp>[0])
         const mutated = config.hooks?.onHelp ? await config.hooks.onHelp(helpText) : undefined
-        console.log(typeof mutated === 'string' ? mutated : helpText)
+        await runtime.stdout(typeof mutated === 'string' ? mutated : helpText)
         return
       }
 
@@ -391,6 +509,7 @@ export function clily<
         mergedJsonSchema,
         schemaDefaults,
         config.hooks,
+        runtime,
         debug,
         config.handler as ((args: Record<string, unknown>) => void | Promise<void>) | undefined,
       )
@@ -399,9 +518,11 @@ export function clily<
 
   return async () => {
     try {
-      if (completionConfig && isCompletionCommand(process.argv.slice(2), completionCommandNames)) {
+      const rawArgs = runtime.argv.slice(2)
+
+      if (completionConfig && isCompletionCommand(rawArgs, completionCommandNames)) {
         const shell = resolveCompletionShell(
-          extractCompletionShellArg(process.argv.slice(2), completionCommandNames),
+          extractCompletionShellArg(rawArgs, completionCommandNames),
           completionConfig,
           environment,
         )
@@ -410,23 +531,60 @@ export function clily<
           buildCompletionTree({
             flags: config.flags,
             args: config.args,
-            children: config.children as Record<string, ClilyChildSimple> | undefined,
+            children: config.children as
+              | Record<
+                  string,
+                  {
+                    description?: string
+                    args?: StandardSchemaV1
+                    children?: Record<string, unknown>
+                    handler?: (...args: unknown[]) => unknown
+                  }
+                >
+              | undefined,
             completion: config.completion,
           }),
           shell,
         )
-        console.log(script)
+        await runtime.stdout(script)
         return
       }
 
-      await runMain(rootCommand)
-    } catch (err) {
-      if (config.hooks?.onError) {
-        await config.hooks.onError(err instanceof Error ? err : new Error(String(err)))
-      } else {
-        consola.error(err)
-        process.exit(1)
+      if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
+        const { childConfig, commandPath } = resolveHelpTarget(
+          rawArgs,
+          config.name,
+          config.children as Record<string, ClilyChildSimple> | undefined,
+        )
+        const helpText = childConfig
+          ? generateChildHelp(childConfig, flagSchema, commandPath)
+          : generateHelp({
+              ...config,
+              children: helpChildren,
+            } as Parameters<typeof generateHelp>[0])
+
+        const mutated = childConfig?.hooks?.onHelp
+          ? await childConfig.hooks.onHelp(helpText)
+          : config.hooks?.onHelp
+            ? await config.hooks.onHelp(helpText)
+            : undefined
+
+        await runtime.stdout(typeof mutated === 'string' ? mutated : helpText)
+        return
       }
+
+      if (rawArgs.length === 1 && rawArgs[0] === '--version') {
+        if (!config.version) {
+          throw new Error('No version specified')
+        }
+
+        await runtime.stdout(config.version)
+        return
+      }
+
+      await runCommand(rootCommand, { rawArgs })
+    } catch (err) {
+      await handleCommandExit(toError(err), config.hooks, runtime)
     }
   }
 }

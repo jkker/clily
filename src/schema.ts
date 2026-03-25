@@ -26,8 +26,8 @@ function valibotEntryToProperty(raw: Record<string, unknown>): {
     prop.default =
       typeof raw.default === 'function' ? (raw.default as () => unknown)() : raw.default
   }
-  if (inner.type === 'picklist' && Array.isArray((inner as Record<string, unknown>).options)) {
-    prop.enum = (inner as Record<string, unknown>).options as unknown[]
+  if (inner.type === 'picklist' && Array.isArray(inner.options)) {
+    prop.enum = inner.options as unknown[]
   }
   return { prop, optional: isOptional }
 }
@@ -234,5 +234,5 @@ export async function validateSchema<T>(
   if (result.issues) {
     return { success: false, issues: result.issues }
   }
-  return { success: true, value: result.value as T }
+  return { success: true, value: result.value }
 }

@@ -11,6 +11,7 @@ import {
   camelToKebab,
   clily,
   coerceTypes,
+  createRuntime,
   extractCompletionShellArg,
   generateCompletionScript,
   generateHelp,
@@ -40,6 +41,7 @@ const { mockRunMain, mockDefineCommand, mockLoadConfig } = vi.hoisted(() => ({
 
 vi.mock('citty', () => ({
   defineCommand: mockDefineCommand,
+  runCommand: mockRunMain,
   runMain: mockRunMain,
 }))
 
@@ -404,6 +406,46 @@ describe('std-env integration', () => {
   })
 })
 
+describe('runtime boundary', () => {
+  test('createRuntime uses default stdout and debug adapters', async () => {
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const debugSpy = vi.spyOn(consola, 'debug').mockImplementation(() => undefined)
+
+    const runtime = createRuntime()
+
+    await runtime.stdout('hello')
+    await runtime.debug('debug-only')
+
+    expect(stdoutSpy).toHaveBeenCalledWith('hello')
+    expect(debugSpy).toHaveBeenCalledWith('debug-only')
+
+    stdoutSpy.mockRestore()
+    debugSpy.mockRestore()
+  })
+
+  test('createRuntime respects explicit overrides', async () => {
+    const exit = vi.fn()
+    const stdout = vi.fn()
+
+    const runtime = createRuntime({
+      argv: ['bun', 'task'],
+      env: { BUN_ENV: 'test' },
+      cwd: () => '/tmp/workspace',
+      exit,
+      stdout,
+    })
+
+    await runtime.stdout('captured')
+    await runtime.exit({ code: 9, reason: 'runtime-error' })
+
+    expect(runtime.argv).toEqual(['bun', 'task'])
+    expect(runtime.env).toEqual({ BUN_ENV: 'test' })
+    expect(runtime.cwd()).toBe('/tmp/workspace')
+    expect(stdout).toHaveBeenCalledWith('captured')
+    expect(exit).toHaveBeenCalledWith({ code: 9, reason: 'runtime-error' })
+  })
+})
+
 describe('completion helpers', () => {
   test('normalizes completion config defaults', () => {
     expect(normalizeCompletionConfig(true)).toEqual({
@@ -731,10 +773,6 @@ describe('Scenario C: CI/CD Validation Error', () => {
   })
 
   test('prints validation errors and exits in CI mode', async () => {
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('exit')
-    })
-
     clily({
       name: 'mycli',
       children: {
@@ -755,17 +793,13 @@ describe('Scenario C: CI/CD Validation Error', () => {
         args: {},
         cmd: {},
       }),
-    ).rejects.toThrow('exit')
-
-    expect(mockExit).toHaveBeenCalledWith(1)
-    mockExit.mockRestore()
+    ).rejects.toMatchObject({
+      code: 1,
+      reason: 'validation',
+    })
   })
 
   test('works the same with Zod schemas in CI', async () => {
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('exit')
-    })
-
     clily({
       name: 'mycli',
       children: {
@@ -782,10 +816,10 @@ describe('Scenario C: CI/CD Validation Error', () => {
         args: {},
         cmd: {},
       }),
-    ).rejects.toThrow('exit')
-
-    expect(mockExit).toHaveBeenCalledWith(1)
-    mockExit.mockRestore()
+    ).rejects.toMatchObject({
+      code: 1,
+      reason: 'validation',
+    })
   })
 })
 
@@ -901,6 +935,67 @@ describe('Scenario D: Help Discovery', () => {
     expect(output).toContain('--verbose')
 
     consoleSpy.mockRestore()
+  })
+
+  test('uses injected argv for wrapper-level help output', async () => {
+    const stdout = vi.fn()
+
+    const run = clily({
+      name: 'mycli',
+      description: 'Injected argv help',
+      runtime: {
+        argv: ['node', 'mycli', '--help'],
+        stdout,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('Injected argv help'))
+  })
+
+  test('uses injected argv for wrapper-level version output', async () => {
+    const stdout = vi.fn()
+
+    const run = clily({
+      name: 'mycli',
+      version: '9.9.9',
+      runtime: {
+        argv: ['node', 'mycli', '--version'],
+        stdout,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(stdout).toHaveBeenCalledWith('9.9.9')
+  })
+
+  test('routes missing version through injected runtime error handling', async () => {
+    const error = vi.fn()
+    const exit = vi.fn()
+
+    const run = clily({
+      name: 'mycli',
+      runtime: {
+        argv: ['node', 'mycli', '--version'],
+        error,
+        exit,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(error).toHaveBeenCalledWith(expect.any(Error))
+    expect(exit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 1,
+        reason: 'runtime-error',
+      }),
+    )
   })
 })
 
@@ -1075,6 +1170,7 @@ describe('Error handling', () => {
 
   test('exits with code 1 when runMain throws without onError', async () => {
     const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    const errorSpy = vi.spyOn(consola, 'error').mockImplementation(() => undefined)
     mockRunMain.mockRejectedValueOnce(new Error('fatal'))
 
     const run = clily({
@@ -1085,7 +1181,83 @@ describe('Error handling', () => {
     await run()
 
     expect(mockExit).toHaveBeenCalledWith(1)
+    errorSpy.mockRestore()
     mockExit.mockRestore()
+  })
+
+  test('uses injected runtime exit instead of process.exit', async () => {
+    const exit = vi.fn()
+    const error = vi.fn()
+    mockRunMain.mockRejectedValueOnce(new Error('fatal'))
+
+    const run = clily({
+      name: 'mycli',
+      runtime: {
+        exit,
+        error,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(error).toHaveBeenCalledWith(expect.any(Error))
+    expect(exit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 1,
+        reason: 'runtime-error',
+      }),
+    )
+  })
+
+  test('calls onExit with structured exit metadata', async () => {
+    const exit = vi.fn()
+    const error = vi.fn()
+    const onExit = vi.fn()
+    mockRunMain.mockRejectedValueOnce(new Error('fatal'))
+
+    const run = clily({
+      name: 'mycli',
+      hooks: { onExit },
+      runtime: {
+        exit,
+        error,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(onExit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 1,
+        reason: 'runtime-error',
+      }),
+    )
+    expect(exit).toHaveBeenCalledTimes(1)
+  })
+
+  test('onError suppresses the default exit path for runtime failures', async () => {
+    const exit = vi.fn()
+    const error = vi.fn()
+    const onError = vi.fn()
+    mockRunMain.mockRejectedValueOnce(new Error('fatal'))
+
+    const run = clily({
+      name: 'mycli',
+      hooks: { onError },
+      runtime: {
+        exit,
+        error,
+      },
+      handler: async () => {},
+    })
+
+    await run()
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error))
+    expect(error).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
   })
 })
 
@@ -1117,6 +1289,30 @@ describe('Nested subcommands', () => {
         meta: { name: 'staging', description: 'Deploy to staging' },
       }),
     )
+  })
+
+  test('throws when root positionals are configured', () => {
+    expect(() =>
+      clily({
+        name: 'mycli',
+        positionals: v.object({ target: v.string() }),
+        handler: async () => {},
+      }),
+    ).toThrow(/Positionals are not supported yet for command "mycli"/)
+  })
+
+  test('throws when child positionals are configured', () => {
+    expect(() =>
+      clily({
+        name: 'mycli',
+        children: {
+          deploy: {
+            positionals: v.object({ target: v.string() }),
+            handler: async () => {},
+          },
+        },
+      }),
+    ).toThrow(/Positionals are not supported yet for command "mycli deploy"/)
   })
 })
 
@@ -1453,12 +1649,30 @@ describe('Env var helpers', () => {
 // ─── Prompt cancel handling ─────────────────────────────
 
 describe('Prompt cancel handling', () => {
+  test('uses enum values as text prompt placeholder hints', async () => {
+    const p = await import('@clack/prompts')
+    const { promptForMissing } = await import('../src/prompt.ts')
+
+    const schema: JsonSchema = {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['fast', 'safe'] },
+      },
+      required: ['mode'],
+    }
+
+    await promptForMissing(['mode'], schema)
+
+    expect(p.text).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placeholder: 'One of: fast, safe',
+      }),
+    )
+  })
+
   test('exits when text prompt is cancelled', async () => {
     const p = await import('@clack/prompts')
     const { promptForMissing } = await import('../src/prompt.ts')
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called')
-    })
     vi.mocked(p.isCancel).mockReturnValueOnce(true)
 
     const schema: JsonSchema = {
@@ -1467,20 +1681,19 @@ describe('Prompt cancel handling', () => {
       required: ['name'],
     }
 
-    await expect(promptForMissing(['name'], schema)).rejects.toThrow('process.exit called')
+    await expect(promptForMissing(['name'], schema)).rejects.toMatchObject({
+      code: 0,
+      reason: 'cancelled',
+      silent: true,
+    })
 
     expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
-    expect(mockExit).toHaveBeenCalledWith(0)
-    mockExit.mockRestore()
     vi.mocked(p.isCancel).mockReturnValue(false)
   })
 
   test('exits when confirm prompt is cancelled', async () => {
     const p = await import('@clack/prompts')
     const { promptForMissing } = await import('../src/prompt.ts')
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called')
-    })
     vi.mocked(p.isCancel).mockReturnValueOnce(true)
 
     const schema: JsonSchema = {
@@ -1489,11 +1702,13 @@ describe('Prompt cancel handling', () => {
       required: ['flag'],
     }
 
-    await expect(promptForMissing(['flag'], schema)).rejects.toThrow('process.exit called')
+    await expect(promptForMissing(['flag'], schema)).rejects.toMatchObject({
+      code: 0,
+      reason: 'cancelled',
+      silent: true,
+    })
 
     expect(p.cancel).toHaveBeenCalledWith('Operation cancelled.')
-    expect(mockExit).toHaveBeenCalledWith(0)
-    mockExit.mockRestore()
     vi.mocked(p.isCancel).mockReturnValue(false)
   })
 })
@@ -1520,9 +1735,6 @@ describe('Re-validation after prompt', () => {
   test('exits when re-validation fails after prompt', async () => {
     mockHasTTY = true
     mockIsCI = false
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('exit')
-    })
 
     clily({
       name: 'mycli',
@@ -1543,10 +1755,10 @@ describe('Re-validation after prompt', () => {
         args: {},
         cmd: {},
       }),
-    ).rejects.toThrow('exit')
-
-    expect(mockExit).toHaveBeenCalledWith(1)
-    mockExit.mockRestore()
+    ).rejects.toMatchObject({
+      code: 1,
+      reason: 'validation',
+    })
   })
 })
 
@@ -1572,9 +1784,6 @@ describe('TTY validation with type errors', () => {
   test('logs type errors and exits in TTY when no missing keys', async () => {
     mockHasTTY = true
     mockIsCI = false
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('exit')
-    })
 
     // Schema requires a number, but CLI provides a non-coercible string
     clily({
@@ -1596,10 +1805,10 @@ describe('TTY validation with type errors', () => {
         args: { count: 'abc' },
         cmd: {},
       }),
-    ).rejects.toThrow('exit')
-
-    expect(mockExit).toHaveBeenCalledWith(1)
-    mockExit.mockRestore()
+    ).rejects.toMatchObject({
+      code: 1,
+      reason: 'validation',
+    })
   })
 })
 
@@ -1677,7 +1886,9 @@ describe('Config file loading error', () => {
   })
 
   test('continues when config file loading fails', async () => {
-    mockLoadConfig.mockRejectedValueOnce(new Error('file not found'))
+    const error = new Error('file not found') as Error & { code?: string }
+    error.code = 'ENOENT'
+    mockLoadConfig.mockRejectedValueOnce(error)
     const handler = vi.fn()
 
     clily({
@@ -1697,6 +1908,45 @@ describe('Config file loading error', () => {
     })
 
     expect(handler).toHaveBeenCalled()
+  })
+
+  test('rethrows non-missing config file errors', async () => {
+    mockLoadConfig.mockRejectedValueOnce(new Error('invalid config syntax'))
+
+    clily({
+      name: 'mycli',
+      children: {
+        deploy: {
+          args: v.object({ name: v.optional(v.string(), 'default') }),
+          handler: async () => {},
+        },
+      },
+    })
+
+    await expect(
+      subRunHandlers['deploy']({
+        rawArgs: [],
+        args: {},
+        cmd: {},
+      }),
+    ).rejects.toThrow(/Failed to load config for command "mycli"/)
+  })
+
+  test('uses process cwd when no cwd override is provided', async () => {
+    const { loadClilyConfig } = await import('../src/config.ts')
+
+    mockLoadConfig.mockResolvedValueOnce({
+      config: {},
+      layers: [],
+    })
+
+    await loadClilyConfig({ name: 'mycli' })
+
+    expect(mockLoadConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: process.cwd(),
+      }),
+    )
   })
 })
 
