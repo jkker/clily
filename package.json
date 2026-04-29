@@ -1,0 +1,30 @@
+{
+  "name": "@clily/monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vpr build",
+    "check": "vp check",
+    "test": "vp test",
+    "prepare": "vp config"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint-plugin-react-hooks": "catalog:",
+    "eslint-plugin-react-you-might-not-need-an-effect": "catalog:",
+    "knip": "catalog:",
+    "typescript": "^6.0.3",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "onFail": "error",
+      "version": "^24"
+    }
+  },
+  "packageManager": "pnpm@11.0.0"
+}

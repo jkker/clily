@@ -1,0 +1,37 @@
+packages:
+  - apps/*
+  - packages/*
+  - examples/*
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+catalog:
+  '@fontsource/cormorant-garamond': ^5.2.11
+  '@types/json-schema': ^7.0.15
+  '@types/node': ^24
+  '@typescript/native-preview': 7.0.0-dev.20260421.2
+  '@vitest/coverage-v8': ^4.1.4
+  consola: ^3.4.2
+  defu: ^6.1.7
+  eslint-plugin-react-hooks: ^7.1.1
+  eslint-plugin-react-you-might-not-need-an-effect: ^0.9.3
+  knip: ^6.7.0
+  typescript: ^6.0.3
+  vite: npm:@voidzero-dev/vite-plus-core@latest
+  vite-plus: latest
+  vitest: npm:@voidzero-dev/vite-plus-test@latest
+
+catalogMode: prefer
+minimumReleaseAgeExclude:
+  - postcss@8.5.10
+overrides:
+  vite: 'catalog:'
+  vitest: 'catalog:'
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'

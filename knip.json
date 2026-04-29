@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip/schema.json",
+  "ignoreExportsUsedInFile": {
+    "interface": true,
+    "type": true
+  },
+  "ignoreBinaries": ["vpr"],
+  "ignoreDependencies": ["@typescript/native-preview", ".*eslint-plugin.*", "@vitest/coverage-v8"],
+  "workspaces": {
+    ".": {
+      "entry": ["vite.config.ts"]
+    },
+    "./packages/core": {
+      "vitest": {
+        "config": "vite.config.ts"
+      }
+    },
+    "./apps/docs": {
+      "entry": ["source.config.ts", "**/page.{ts,tsx}", "components/layout-slots.tsx"]
+    }
+  },
+  "rules": {
+    "catalog": "off",
+    "duplicates": "off"
+  }
+}
