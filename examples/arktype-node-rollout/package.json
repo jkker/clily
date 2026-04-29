@@ -1,0 +1,22 @@
+{
+  "name": "@clily/example-arktype-node-rollout",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node src/index.ts",
+    "verify": "node src/index.ts ship production --revision=rev-42 --replicas=3 --strategy=blue-green",
+    "verify:completion": "node src/index.ts completion pwsh"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "arktype": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "rollout": {
+    "audit": {
+      "limit": 10
+    }
+  }
+}

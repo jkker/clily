@@ -1,0 +1,41 @@
+---
+title: Start
+description: Install clily and write one comfortable command.
+icon: Sprout
+---
+
+Install `@clily/core` with a schema library that supports Standard Schema and Standard JSON Schema metadata.
+
+```bash
+vp add @clily/core zod
+```
+
+```ts
+import clily from '@clily/core'
+import { z } from 'zod'
+
+const run = clily({
+  name: 'release',
+  completion: true,
+  subCommands: {
+    deploy: clily.command({
+      args: z.object({
+        image: z.string(),
+        region: z.string().default('us-east-1'),
+      }),
+      positionals: z.string(),
+      run: ({ args, positionals }) => {
+        console.log(args.image, args.region, positionals)
+      },
+    }),
+  },
+})
+
+await run()
+```
+
+```bash
+node src/index.ts deploy production --image=ghcr.io/acme/web
+```
+
+`clily.command()` is the comfort point: nested commands infer locally, without root generic annotations.

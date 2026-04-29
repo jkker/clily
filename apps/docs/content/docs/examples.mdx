@@ -1,0 +1,25 @@
+---
+title: Examples
+description: The source-backed examples and what they prove.
+icon: Boxes
+---
+
+| Workspace                       | Proves                                          |
+| ------------------------------- | ----------------------------------------------- |
+| `examples/zod-node-release`     | nested commands, aliases, config, env, CLI args |
+| `examples/zod-node-package`     | custom `clily.Logger`                           |
+| `examples/arktype-node-rollout` | ArkType, positionals, plugins, lifecycle hooks  |
+| `examples/zod-node-maintenance` | array positionals and cleanup                   |
+
+Run an example from its workspace:
+
+```bash
+cd examples/zod-node-release
+RELEASE_DEPLOY_REPLICAS=4 node src/index.ts deploy production --image=ghcr.io/acme/web
+```
+
+Completion commands currently return placeholder metadata:
+
+```bash
+node src/index.ts completion zsh
+```

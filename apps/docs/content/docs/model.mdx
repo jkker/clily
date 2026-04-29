@@ -1,0 +1,37 @@
+---
+title: Model
+description: The runtime model in one page.
+icon: Layers
+---
+
+## Inputs
+
+clily merges named args in this order:
+
+1. CLI args
+2. environment variables
+3. config files
+4. schema defaults
+
+For `release deploy` and `server.port`, the env key is:
+
+```bash
+RELEASE_DEPLOY_SERVER__PORT=4000
+```
+
+## Execution
+
+Each run follows the same path:
+
+1. build the command tree
+2. resolve the active subtree
+3. parse and merge input
+4. prompt when interactive
+5. validate with the source schema
+6. run plugins, `setup`, `run`, `cleanup`
+
+`cleanup` still runs when `setup` or `run` throws.
+
+## Comfort Rule
+
+Use schema defaults for command truth. Use env and config for machine truth.

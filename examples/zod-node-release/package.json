@@ -1,0 +1,23 @@
+{
+  "name": "@clily/example-zod-node-release",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node src/index.ts",
+    "verify": "RELEASE_DEPLOY_REPLICAS=4 node src/index.ts deploy production --image=ghcr.io/acme/web",
+    "verify:completion": "node src/index.ts completion zsh"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "release": {
+    "deploy": {
+      "profile": "prod",
+      "region": "eu-west-1"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

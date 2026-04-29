@@ -1,0 +1,25 @@
+{
+  "name": "@clily/example-zod-node-maintenance",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node src/index.ts",
+    "verify": "node src/index.ts backup db uploads --no-compress",
+    "verify:completion": "node src/index.ts completion fish"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "maintenance": {
+    "backup": {
+      "snapshot": "nightly"
+    },
+    "prune": {
+      "days": 14
+    }
+  }
+}

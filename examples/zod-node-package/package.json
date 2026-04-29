@@ -1,0 +1,22 @@
+{
+  "name": "@clily/example-zod-node-package",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "node src/index.ts",
+    "verify": "node src/index.ts publish --tag=next",
+    "verify:completion": "node src/index.ts completion bash"
+  },
+  "dependencies": {
+    "@clily/core": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packagectl": {
+    "publish": {
+      "registry": "https://registry.example.test"
+    }
+  }
+}

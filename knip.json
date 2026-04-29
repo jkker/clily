@@ -16,7 +16,7 @@
       }
     },
     "./apps/docs": {
-      "entry": ["source.config.ts", "**/page.{ts,tsx}", "components/layout-slots.tsx"]
+      "entry": ["source.config.ts", "**/page.{ts,tsx}"]
     }
   },
   "rules": {
